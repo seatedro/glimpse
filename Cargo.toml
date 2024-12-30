@@ -1,6 +1,6 @@
 [package]
 name = "glimpse"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "A blazingly fast tool for peeking at codebases. Perfect for loading your codebase into an LLM's context."
 license = "MIT"
