@@ -87,7 +87,13 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 
 pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
     match args.tokenizer.as_ref().unwrap_or(&TokenizerType::Tiktoken) {
-        TokenizerType::Tiktoken => TokenCounter::new(),
+        TokenizerType::Tiktoken => {
+            if let Some(model) = &args.model {
+                TokenCounter::new(model)
+            } else {
+                TokenCounter::new("gpt-4o")
+            }
+        }
         TokenizerType::HuggingFace => {
             if let Some(path) = &args.tokenizer_file {
                 TokenCounter::from_hf_file(path.to_str().unwrap())

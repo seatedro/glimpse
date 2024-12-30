@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
-use tiktoken_rs::o200k_base;
+use tiktoken_rs::get_bpe_from_model;
 use tokenizers::Tokenizer as HfTokenizer;
 
 pub enum TokenizerBackend {
@@ -18,9 +18,9 @@ pub struct TokenCounter {
 }
 
 impl TokenCounter {
-    pub fn new() -> Result<Self> {
-        let bpe =
-            o200k_base().map_err(|e| anyhow!("Failed to initialize tiktoken tokenizer: {}", e))?;
+    pub fn new(model_name: &str) -> Result<Self> {
+        let bpe = get_bpe_from_model(model_name)
+            .map_err(|e| anyhow!("Failed to initialize tiktoken tokenizer: {}", e))?;
 
         Ok(Self {
             backend: TokenizerBackend::Tiktoken(bpe),
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn test_tiktoken_counter() -> Result<()> {
-        let counter = TokenCounter::new()?;
+        let counter = TokenCounter::new("gpt-4o")?;
         let text = "Hello, world!";
         let count = counter.count_tokens(text)?;
         assert!(count > 0);
