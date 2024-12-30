@@ -236,7 +236,7 @@ mod tests {
             threads: None,
             hidden: false,
             no_ignore: false,
-            tokens: false,
+            no_tokens: true,
             model: None,
             tokenizer: Some(crate::cli::TokenizerType::Tiktoken),
             tokenizer_file: None,

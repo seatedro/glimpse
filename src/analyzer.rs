@@ -77,7 +77,7 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     // Handle output (print/copy/save)
     handle_output(output, args)?;
 
-    if args.tokens {
+    if !args.no_tokens {
         let counter = create_token_counter(args)?;
         display_token_counts(counter, &entries)?;
     }

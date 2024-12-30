@@ -60,9 +60,9 @@ pub struct Cli {
     #[arg(long)]
     pub no_ignore: bool,
 
-    /// Token Count
+    /// Ignore Token Count
     #[arg(long)]
-    pub tokens: bool,
+    pub no_tokens: bool,
 
     /// Tokenizer to use (tiktoken or huggingface)
     #[arg(long, value_enum)]
@@ -95,7 +95,7 @@ impl Cli {
         }
 
         // Set default tokenizer if none specified but token counting is enabled
-        if cli.tokens && cli.tokenizer.is_none() {
+        if !cli.no_tokens && cli.tokenizer.is_none() {
             cli.tokenizer = Some(match config.default_tokenizer.as_str() {
                 "huggingface" => TokenizerType::HuggingFace,
                 _ => TokenizerType::Tiktoken,
