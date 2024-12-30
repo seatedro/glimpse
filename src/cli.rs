@@ -10,7 +10,7 @@ use std::path::PathBuf;
 )]
 pub struct Cli {
     /// Directory to analyze
-    #[arg(value_parser = validate_path)]
+    #[arg(value_parser = validate_path, default_value = ".")]
     pub path: PathBuf,
 
     /// Additional patterns to include (e.g. "*.rs,*.go")
