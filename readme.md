@@ -10,6 +10,7 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 - ⚙️ Configurable defaults
 - 📋 Clipboard support
 - 🎨 Customizable file type detection
+- 🥷 Respects .gitignore automatically
 
 ## Installation
 
