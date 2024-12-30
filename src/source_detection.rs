@@ -110,19 +110,20 @@ static SOURCE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
     // Other Languages
     set.extend(&[
-        "r",    // R
-        "jl",   // Julia
-        "ml",   // OCaml
-        "mli",  // OCaml interface
-        "hs",   // Haskell
-        "lhs",  // Literate Haskell
-        "clj",  // Clojure
-        "cljs", // ClojureScript
-        "cljc", // Clojure Common
-        "bf",   // Brainfuck (why not?)
-        "lisp", // Lisp
-        "el",   // Emacs Lisp
-        "vim",  // Vim script
+        "r",     // R
+        "jl",    // Julia
+        "ml",    // OCaml
+        "mli",   // OCaml interface
+        "hs",    // Haskell
+        "lhs",   // Literate Haskell
+        "clj",   // Clojure
+        "cljs",  // ClojureScript
+        "cljc",  // Clojure Common
+        "bf",    // Brainfuck (why not?)
+        "lisp",  // Lisp
+        "el",    // Emacs Lisp
+        "vim",   // Vim script
+        "templ", // Templ
     ]);
 
     // Build/Config specific
@@ -162,6 +163,7 @@ mod tests {
             ("test.rs", true),
             ("test.py", true),
             ("test.js", true),
+            ("test.templ", true),
             ("test.xyz", false),
             ("test", false),
             ("test.txt", false),
