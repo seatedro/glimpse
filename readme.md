@@ -18,6 +18,17 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 cargo install glimpse
 ```
 
+Using Nix:
+```bash
+# Install directly
+nix profile install github:seatedro/glimpse
+
+# Or use in your flake
+{
+  inputs.glimpse.url = "github:seatedro/glimpse";
+}
+```
+
 ## Usage
 
 Basic usage:
