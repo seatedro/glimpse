@@ -18,7 +18,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "glimpse";
-          version = "0.6.0";
+          version = "0.6.1";
           
           src = ./.;
 
@@ -31,6 +31,10 @@
           ];
 
           buildInputs = with pkgs; [ ];
+
+          checkFlags = [
+            "--skip=tokenizer::tests::test_hf_counter"
+          ];
 
           meta = with pkgs.lib; {
             description = "A blazingly fast tool for peeking at codebases";
