@@ -12,11 +12,11 @@ pub struct Cli {
     #[arg(value_parser = validate_path)]
     pub path: PathBuf,
 
-    /// Patterns to include (e.g. "*.rs,*.go")
+    /// Additional patterns to include (e.g. "*.rs,*.go")
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
 
-    /// Patterns to exclude
+    /// Additional patterns to exclude
     #[arg(short, long, value_delimiter = ',')]
     pub exclude: Option<Vec<String>>,
 
@@ -39,13 +39,17 @@ pub struct Cli {
     /// Show hidden files and directories
     #[arg(short = 'H', long)]
     pub hidden: bool,
+
+    /// Don't respect .gitignore files
+    #[arg(long)]
+    pub no_ignore: bool,
 }
 
-fn validate_path(s: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(s);
-    if path.exists() {
-        Ok(path)
+fn validate_path(path: &str) -> Result<PathBuf, String> {
+    let path_buf = PathBuf::from(path);
+    if path_buf.exists() {
+        Ok(path_buf)
     } else {
-        Err(format!("Path '{}' does not exist", s))
+        Err(format!("Path '{}' does not exist", path))
     }
 }

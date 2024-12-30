@@ -1,17 +1,16 @@
 use crate::cli::Cli;
 use crate::output::{generate_output, FileEntry};
 use crate::patterns::PatternMatcher;
+use crate::source_detection;
 use anyhow::Result;
 use colored::*;
+use ignore::{DirEntry, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
 use std::path::Path;
-use walkdir::{DirEntry, WalkDir};
 
 pub fn process_directory(args: &Cli) -> Result<()> {
-    let pattern_matcher = PatternMatcher::new(args.include.clone(), args.exclude.clone())?;
-
     // Configure thread pool if specified
     if let Some(threads) = args.threads {
         rayon::ThreadPoolBuilder::new()
@@ -28,14 +27,39 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     );
     pb.set_message("Scanning files...");
 
+    // Build the walker with ignore patterns
+    let mut builder = WalkBuilder::new(&args.path);
+    builder
+        .max_depth(Some(args.max_depth))
+        .hidden(!args.hidden)
+        .git_ignore(!args.no_ignore)
+        .ignore(!args.no_ignore);
+
+    // Add custom ignore/include patterns
+    if let Some(ref excludes) = args.exclude {
+        for pattern in excludes {
+            builder.add_ignore(pattern);
+        }
+    }
+    if let Some(ref includes) = args.include {
+        for pattern in includes {
+            builder.add_custom_ignore_filename(pattern);
+        }
+    }
+
     // Collect all valid files
-    let entries: Vec<FileEntry> = WalkDir::new(&args.path)
-        .max_depth(args.max_depth)
-        .into_iter()
-        .filter_entry(|e| should_process_entry(e, args.hidden))
-        .filter_map(|e| e.ok())
-        .filter(|e| filter_entry(e, &pattern_matcher, args.max_size))
-        .par_bridge() // Enable parallel processing
+    let entries: Vec<FileEntry> = builder
+        .build()
+        .par_bridge()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                && source_detection::is_source_file(entry.path())
+                && entry
+                    .metadata()
+                    .map(|m| m.len() <= args.max_size)
+                    .unwrap_or(false)
+        })
         .filter_map(|entry| process_file(&entry, &args.path).ok())
         .collect();
 
@@ -59,7 +83,12 @@ fn should_process_entry(entry: &DirEntry, include_hidden: bool) -> bool {
 }
 
 fn filter_entry(entry: &DirEntry, matcher: &PatternMatcher, max_size: u64) -> bool {
-    if !entry.file_type().is_file() {
+    if !entry
+        .file_type()
+        .expect("Failed to get file type")
+        .is_file()
+        || !source_detection::is_source_file(entry.path())
+    {
         return false;
     }
 
@@ -72,7 +101,7 @@ fn filter_entry(entry: &DirEntry, matcher: &PatternMatcher, max_size: u64) -> bo
     matcher.should_process(entry.path())
 }
 
-fn process_file(entry: &DirEntry, base_path: &Path) -> Result<FileEntry> {
+fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry> {
     let relative_path = entry.path().strip_prefix(base_path)?;
     let content = fs::read_to_string(entry.path())?;
 

@@ -4,6 +4,7 @@ mod analyzer;
 mod cli;
 mod output;
 mod patterns;
+mod source_detection;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
