@@ -18,7 +18,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "glimpse";
-          version = "0.5.2";
+          version = "0.6.0";
           
           src = ./.;
 

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, ValueEnum)]
 pub enum TokenizerType {
     Tiktoken,
+    #[clap(name = "huggingface")]
     HuggingFace,
 }
 
