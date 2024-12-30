@@ -14,8 +14,15 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 
 ## Installation
 
+Using cargo:
 ```bash
 cargo install glimpse
+```
+
+Using homebrew:
+```bash
+brew tap seatedro/glimpse
+brew install glimpse
 ```
 
 Using Nix:
