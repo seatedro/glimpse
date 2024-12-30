@@ -57,6 +57,30 @@ glimpse -i "*.rs,*.go" /path/to/project
 glimpse -e "target/*,dist/*" /path/to/project
 ```
 
+## CLI Options
+
+```
+Usage: glimpse [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  Directory to analyze [default: .]
+
+Options:
+  -i, --include <PATTERNS>    Additional patterns to include (e.g. "*.rs,*.go")
+  -e, --exclude <PATTERNS>    Additional patterns to exclude
+  -s, --max-size <BYTES>      Maximum file size in bytes
+      --max-depth <DEPTH>     Maximum directory depth to traverse
+  -o, --output <FORMAT>       Output format: tree, files, or both
+  -f, --file <PATH>          Save output to specified file
+  -p, --print               Print to stdout instead of clipboard
+  -t, --threads <COUNT>      Number of threads for parallel processing
+  -H, --hidden              Show hidden files and directories
+      --no-ignore           Don't respect .gitignore files
+      --tokens              Show token count estimates
+  -h, --help                Print help
+  -V, --version             Print version
+```
+
 ## Configuration
 
 Glimpse uses a config file located at:
