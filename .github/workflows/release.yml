@@ -3,36 +3,115 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/create-gh-release-action@v1
+      - uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
 
-  upload-assets:
+  build-and-upload:
     needs: create-release
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/upload-rust-binary-action@v1
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          bin: glimpse
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          
+          # Define binary name with extension if windows
+          BIN_NAME=glimpse
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            BIN_NAME=glimpse.exe
+          fi
+          
+          # Create archive name
+          ARCHIVE_NAME=glimpse-${{ github.ref_name }}-${{ matrix.target }}
+          
+          # Create dist directory with required files
+          mkdir -p $ARCHIVE_NAME
+          cp $BIN_NAME $ARCHIVE_NAME/
+          cp ../../../README.md $ARCHIVE_NAME/
+          cp ../../../LICENSE $ARCHIVE_NAME/
+          
+          # Create archive based on OS
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            7z a -tzip "${ARCHIVE_NAME}.zip" $ARCHIVE_NAME
+          else
+            tar -czf "${ARCHIVE_NAME}.tar.gz" $ARCHIVE_NAME
+          fi
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/${{ matrix.target }}/release/glimpse-*.tar.gz
+            target/${{ matrix.target }}/release/glimpse-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-glimpse
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          
+      - name: Update formula
+        run: |
+          # Get tarball URL and SHA
+          TARBALL_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz"
+          SHA256=$(curl -L $TARBALL_URL | shasum -a 256 | cut -d ' ' -f 1)
+          
+          # Update formula version and hash
+          sed -i "s|url.*|url \"$TARBALL_URL\"|" Formula/glimpse.rb
+          sed -i "s|sha256.*|sha256 \"$SHA256\"|" Formula/glimpse.rb
+          
+      - name: Commit and push changes
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/glimpse.rb
+          git commit -m "chore: update to ${{ github.ref_name }}"
+          git push
