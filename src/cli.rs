@@ -53,9 +53,9 @@ pub struct Cli {
     #[arg(long)]
     pub no_ignore: bool,
 
-    /// Skip Tokenization
+    /// Token Count
     #[arg(long)]
-    pub skip_tokenization: bool,
+    pub tokens: bool,
 }
 
 impl Cli {

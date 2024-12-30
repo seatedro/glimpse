@@ -231,7 +231,7 @@ mod tests {
             threads: None,
             hidden: false,
             no_ignore: false,
-            skip_tokenization: true,
+            tokens: false,
         };
 
         handle_output(content.clone(), &args).unwrap();

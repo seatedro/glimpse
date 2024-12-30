@@ -76,7 +76,7 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     // Handle output (print/copy/save)
     handle_output(output, args)?;
 
-    if !args.skip_tokenization {
+    if args.tokens {
         display_token_counts(&entries)?;
     }
 
