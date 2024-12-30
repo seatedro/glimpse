@@ -47,7 +47,13 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
     println!("\nToken Count Summary:");
     println!("Total tokens: {}", token_count.total_tokens);
     println!("\nBreakdown by file:");
-    for (path, count) in token_count.breakdown {
+
+    // Sorting breakdown
+    let mut breakdown = token_count.breakdown;
+    breakdown.sort_by(|(_, a), (_, b)| b.cmp(a));
+    let top_files = breakdown.iter().take(15);
+
+    for (path, count) in top_files {
         println!("  {}: {}", path.display(), count);
     }
 
