@@ -1,10 +1,8 @@
 use crate::cli::Cli;
-use crate::output::{generate_output, FileEntry};
-use crate::patterns::PatternMatcher;
+use crate::output::{generate_output, handle_output, FileEntry};
 use crate::source_detection;
 use anyhow::Result;
-use colored::*;
-use ignore::{DirEntry, WalkBuilder};
+use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
@@ -27,10 +25,17 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     );
     pb.set_message("Scanning files...");
 
+    let max_size = args.max_size.expect("max_size should be set from config");
+    let max_depth = args.max_depth.expect("max_depth should be set from config");
+    let output_format = args
+        .output
+        .as_deref()
+        .expect("output format should be set from config");
+
     // Build the walker with ignore patterns
     let mut builder = WalkBuilder::new(&args.path);
     builder
-        .max_depth(Some(args.max_depth))
+        .max_depth(Some(max_depth))
         .hidden(!args.hidden)
         .git_ignore(!args.no_ignore)
         .ignore(!args.no_ignore);
@@ -57,48 +62,21 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                 && source_detection::is_source_file(entry.path())
                 && entry
                     .metadata()
-                    .map(|m| m.len() <= args.max_size)
+                    .map(|m| m.len() <= max_size)
                     .unwrap_or(false)
         })
         .filter_map(|entry| process_file(&entry, &args.path).ok())
         .collect();
 
-    pb.finish_with_message("Analysis complete!");
+    pb.finish();
 
-    // Generate and print output
-    generate_output(&entries, &args.output)?;
+    // Generate output
+    let output = generate_output(&entries, output_format)?;
+
+    // Handle output (print/copy/save)
+    handle_output(output, args)?;
 
     Ok(())
-}
-
-fn should_process_entry(entry: &DirEntry, include_hidden: bool) -> bool {
-    if !include_hidden {
-        if let Some(file_name) = entry.file_name().to_str() {
-            if file_name.starts_with('.') {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn filter_entry(entry: &DirEntry, matcher: &PatternMatcher, max_size: u64) -> bool {
-    if !entry
-        .file_type()
-        .expect("Failed to get file type")
-        .is_file()
-        || !source_detection::is_source_file(entry.path())
-    {
-        return false;
-    }
-
-    if let Ok(metadata) = entry.metadata() {
-        if metadata.len() > max_size {
-            return false;
-        }
-    }
-
-    matcher.should_process(entry.path())
 }
 
 fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry> {

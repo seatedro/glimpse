@@ -1,3 +1,4 @@
+use crate::config::Config;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -21,16 +22,24 @@ pub struct Cli {
     pub exclude: Option<Vec<String>>,
 
     /// Maximum file size in bytes
-    #[arg(short, long, default_value = "10485760")] // 10MB
-    pub max_size: u64,
+    #[arg(short, long)]
+    pub max_size: Option<u64>,
 
     /// Maximum directory depth
-    #[arg(long, default_value = "20")]
-    pub max_depth: usize,
+    #[arg(long)]
+    pub max_depth: Option<usize>,
 
     /// Output format (tree, files, or both)
-    #[arg(short, long, default_value = "both")]
-    pub output: String,
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Output file path (optional)
+    #[arg(short = 'f', long)]
+    pub file: Option<PathBuf>,
+
+    /// Copy to clipboard
+    #[arg(short, long, default_value = "true")]
+    pub copy: bool,
 
     /// Number of threads for parallel processing
     #[arg(short, long)]
@@ -45,11 +54,34 @@ pub struct Cli {
     pub no_ignore: bool,
 }
 
+impl Cli {
+    pub fn parse_with_config(config: &Config) -> anyhow::Result<Self> {
+        let mut cli = Self::parse();
+
+        // Apply config defaults if CLI args aren't specified
+        cli.max_size = cli.max_size.or(Some(config.max_size));
+        cli.max_depth = cli.max_depth.or(Some(config.max_depth));
+        cli.output = cli.output.or(Some(config.default_output_format.clone()));
+
+        // Merge excludes from config and CLI
+        if let Some(mut excludes) = cli.exclude.take() {
+            excludes.extend(config.default_excludes.clone());
+            cli.exclude = Some(excludes);
+        } else {
+            cli.exclude = Some(config.default_excludes.clone());
+        }
+
+        Ok(cli)
+    }
+}
+
 fn validate_path(path: &str) -> Result<PathBuf, String> {
     let path_buf = PathBuf::from(path);
-    if path_buf.exists() {
-        Ok(path_buf)
-    } else {
-        Err(format!("Path '{}' does not exist", path))
+    if !path_buf.exists() {
+        return Err(format!("Path '{}' does not exist", path));
     }
+    if !path_buf.is_dir() {
+        return Err(format!("Path '{}' is not a directory", path));
+    }
+    Ok(path_buf)
 }

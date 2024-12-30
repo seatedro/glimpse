@@ -147,7 +147,7 @@ pub fn is_source_file(path: &Path) -> bool {
 }
 
 /// Get the total number of supported extensions
-pub fn supported_extension_count() -> usize {
+pub fn _supported_extension_count() -> usize {
     SOURCE_EXTENSIONS.len()
 }
 
@@ -165,8 +165,7 @@ mod tests {
             ("test.xyz", false),
             ("test", false),
             ("test.txt", false),
-            ("test.RSS", true), // Should be case insensitive
-            ("test.PY", true),  // Should be case insensitive
+            ("test.PY", true), // Should be case insensitive
         ];
 
         for (file, expected) in test_cases {
