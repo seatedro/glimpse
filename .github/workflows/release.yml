@@ -69,7 +69,7 @@ jobs:
           # Create dist directory with required files
           mkdir -p $ARCHIVE_NAME
           cp $BIN_NAME $ARCHIVE_NAME/
-          cp ../../../README.md $ARCHIVE_NAME/
+          cp ../../../readme.md $ARCHIVE_NAME/
           cp ../../../LICENSE $ARCHIVE_NAME/
           
           # Create archive based on OS
