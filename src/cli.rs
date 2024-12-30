@@ -37,9 +37,9 @@ pub struct Cli {
     #[arg(short = 'f', long)]
     pub file: Option<PathBuf>,
 
-    /// Don't Copy to clipboard
-    #[arg(long)]
-    pub dont_copy: bool,
+    /// Print to stdout instead
+    #[arg(short, long)]
+    pub print: bool,
 
     /// Number of threads for parallel processing
     #[arg(short, long)]
