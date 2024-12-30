@@ -19,5 +19,6 @@ rayon = "1.10.0"
 serde = { version = "1.0.217", features = ["derive"] }
 tempfile = "3.14.0"
 tiktoken-rs = "0.6.0"
+tokenizers = { version = "0.21.0", features = ["http"] }
 toml = "0.8.19"
 walkdir = "2.5.0"
