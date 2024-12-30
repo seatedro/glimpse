@@ -1,6 +1,7 @@
-use crate::cli::Cli;
+use crate::cli::{Cli, TokenizerType};
 use crate::output::{display_token_counts, generate_output, handle_output, FileEntry};
 use crate::source_detection;
+use crate::tokenizer::TokenCounter;
 use anyhow::Result;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -77,10 +78,32 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     handle_output(output, args)?;
 
     if args.tokens {
-        display_token_counts(&entries)?;
+        let counter = create_token_counter(args)?;
+        display_token_counts(counter, &entries)?;
     }
 
     Ok(())
+}
+
+pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
+    match args.tokenizer.as_ref().unwrap_or(&TokenizerType::Tiktoken) {
+        TokenizerType::Tiktoken => {
+            if let Some(model) = &args.model {
+                TokenCounter::new(model)
+            } else {
+                TokenCounter::new("gpt-4o")
+            }
+        }
+        TokenizerType::HuggingFace => {
+            if let Some(path) = &args.tokenizer_file {
+                TokenCounter::from_hf_file(path.to_str().unwrap())
+            } else if let Some(model) = &args.model {
+                TokenCounter::with_hf_tokenizer(model)
+            } else {
+                anyhow::bail!("HuggingFace tokenizer requires either a model name or file path")
+            }
+        }
+    }
 }
 
 fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry> {

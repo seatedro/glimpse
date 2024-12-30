@@ -41,9 +41,8 @@ pub fn generate_output(entries: &[FileEntry], format: &str) -> Result<String> {
     Ok(output)
 }
 
-pub fn display_token_counts(entries: &[FileEntry]) -> Result<()> {
-    let token_counter = TokenCounter::new()?;
-    let token_count = token_counter.count_files(entries);
+pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) -> Result<()> {
+    let token_count = token_counter.count_files(entries)?;
 
     println!("\nToken Count Summary:");
     println!("Total tokens: {}", token_count.total_tokens);
@@ -232,6 +231,9 @@ mod tests {
             hidden: false,
             no_ignore: false,
             tokens: false,
+            model: None,
+            tokenizer: Some(crate::cli::TokenizerType::Tiktoken),
+            tokenizer_file: None,
         };
 
         handle_output(content.clone(), &args).unwrap();

@@ -1,6 +1,13 @@
 use crate::config::Config;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum TokenizerType {
+    Tiktoken,
+    #[clap(name = "huggingface")]
+    HuggingFace,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -56,6 +63,18 @@ pub struct Cli {
     /// Token Count
     #[arg(long)]
     pub tokens: bool,
+
+    /// Tokenizer to use (tiktoken or huggingface)
+    #[arg(long, value_enum)]
+    pub tokenizer: Option<TokenizerType>,
+
+    /// Model to use for HuggingFace tokenizer
+    #[arg(long)]
+    pub model: Option<String>,
+
+    /// Path to local tokenizer file
+    #[arg(long)]
+    pub tokenizer_file: Option<PathBuf>,
 }
 
 impl Cli {
@@ -73,6 +92,25 @@ impl Cli {
             cli.exclude = Some(excludes);
         } else {
             cli.exclude = Some(config.default_excludes.clone());
+        }
+
+        // Set default tokenizer if none specified but token counting is enabled
+        if cli.tokens && cli.tokenizer.is_none() {
+            cli.tokenizer = Some(match config.default_tokenizer.as_str() {
+                "huggingface" => TokenizerType::HuggingFace,
+                _ => TokenizerType::Tiktoken,
+            });
+        }
+
+        // Set default model for HuggingFace if none specified
+        if cli
+            .tokenizer
+            .as_ref()
+            .is_some_and(|t| matches!(t, TokenizerType::HuggingFace))
+            && cli.model.is_none()
+            && cli.tokenizer_file.is_none()
+        {
+            cli.model = Some(config.default_tokenizer_model.clone());
         }
 
         Ok(cli)

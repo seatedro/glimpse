@@ -15,6 +15,12 @@ pub struct Config {
 
     #[serde(default)]
     pub default_excludes: Vec<String>,
+
+    #[serde(default = "default_tokenizer_type")]
+    pub default_tokenizer: String,
+
+    #[serde(default = "default_tokenizer_model")]
+    pub default_tokenizer_model: String,
 }
 
 impl Default for Config {
@@ -24,8 +30,18 @@ impl Default for Config {
             max_depth: default_max_depth(),
             default_output_format: default_output_format(),
             default_excludes: default_excludes(),
+            default_tokenizer: default_tokenizer_type(),
+            default_tokenizer_model: default_tokenizer_model(),
         }
     }
+}
+
+fn default_tokenizer_type() -> String {
+    "tiktoken".to_string()
+}
+
+fn default_tokenizer_model() -> String {
+    "gpt2".to_string()
 }
 
 fn default_max_size() -> u64 {
