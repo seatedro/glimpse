@@ -1,4 +1,4 @@
-use crate::cli::Cli;
+use crate::{cli::Cli, tokenizer::TokenCounter};
 use anyhow::Result;
 use std::{fs, path::PathBuf};
 
@@ -39,6 +39,20 @@ pub fn generate_output(entries: &[FileEntry], format: &str) -> Result<String> {
     ));
 
     Ok(output)
+}
+
+pub fn display_token_counts(entries: &[FileEntry]) -> Result<()> {
+    let token_counter = TokenCounter::new()?;
+    let token_count = token_counter.count_files(entries);
+
+    println!("\nToken Count Summary:");
+    println!("Total tokens: {}", token_count.total_tokens);
+    println!("\nBreakdown by file:");
+    for (path, count) in token_count.breakdown {
+        println!("  {}: {}", path.display(), count);
+    }
+
+    Ok(())
 }
 
 fn generate_tree(entries: &[FileEntry]) -> Result<String> {
@@ -217,6 +231,7 @@ mod tests {
             threads: None,
             hidden: false,
             no_ignore: false,
+            skip_tokenization: true,
         };
 
         handle_output(content.clone(), &args).unwrap();

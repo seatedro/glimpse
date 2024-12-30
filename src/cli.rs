@@ -52,6 +52,10 @@ pub struct Cli {
     /// Don't respect .gitignore files
     #[arg(long)]
     pub no_ignore: bool,
+
+    /// Skip Tokenization
+    #[arg(long)]
+    pub skip_tokenization: bool,
 }
 
 impl Cli {

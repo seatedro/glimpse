@@ -1,5 +1,5 @@
 use crate::cli::Cli;
-use crate::output::{generate_output, handle_output, FileEntry};
+use crate::output::{display_token_counts, generate_output, handle_output, FileEntry};
 use crate::source_detection;
 use anyhow::Result;
 use ignore::WalkBuilder;
@@ -75,6 +75,10 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 
     // Handle output (print/copy/save)
     handle_output(output, args)?;
+
+    if !args.skip_tokenization {
+        display_token_counts(&entries)?;
+    }
 
     Ok(())
 }

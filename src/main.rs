@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod output;
 mod source_detection;
+mod tokenizer;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
