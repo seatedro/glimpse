@@ -104,12 +104,12 @@ fn generate_files(entries: &[FileEntry]) -> Result<String> {
 
 pub fn handle_output(content: String, args: &Cli) -> Result<()> {
     // Print to stdout if no other output method is specified
-    if args.file.is_none() && !args.copy {
+    if args.file.is_none() && !args.dont_copy {
         println!("{}", content);
     }
 
     // Copy to clipboard if requested
-    if args.copy {
+    if !args.dont_copy {
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content.clone())) {
             Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
             Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e),
@@ -213,7 +213,7 @@ mod tests {
             max_depth: Some(10),
             output: Some("both".to_string()),
             file: Some(temp_file.clone()),
-            copy: false,
+            dont_copy: false,
             threads: None,
             hidden: false,
             no_ignore: false,
