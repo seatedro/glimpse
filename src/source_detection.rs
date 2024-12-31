@@ -1419,7 +1419,7 @@ mod tests {
             ("test.js", true),
             ("test.xyz", false),
             ("test", false),
-            ("test.txt", false),
+            ("test.txt", true),
             ("test.PY", true), // Should be case insensitive
         ];
 
