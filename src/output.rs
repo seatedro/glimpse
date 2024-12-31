@@ -129,7 +129,7 @@ pub fn handle_output(content: String, args: &Cli) -> Result<()> {
 
     // Copy to clipboard if requested
     if !args.print {
-        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content.clone())) {
+        match cli_clipboard::set_contents(content.clone()) {
             Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
             Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e),
         }
