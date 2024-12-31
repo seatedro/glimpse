@@ -65,13 +65,13 @@ glimpse -i "*.rs,*.go" /path/to/project
 glimpse -e "target/*,dist/*" /path/to/project
 
 # Count tokens using tiktoken (OpenAI's tokenizer)
-glimpse --count-tokens /path/to/project
+glimpse /path/to/project
 
 # Use HuggingFace tokenizer with specific model
-glimpse --count-tokens --tokenizer huggingface --model gpt2 /path/to/project
+glimpse --tokenizer huggingface --model gpt2 /path/to/project
 
 # Use custom local tokenizer file
-glimpse --count-tokens --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/to/project
+glimpse --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/to/project
 ```
 
 ## CLI Options
