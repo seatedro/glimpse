@@ -42,6 +42,10 @@ nix profile install github:seatedro/glimpse
 Basic usage:
 ```bash
 glimpse /path/to/project
+
+glimpse file1 file2 file3
+
+glimpse /path/to/project -e "*.h"
 ```
 
 Common options:
@@ -80,7 +84,7 @@ glimpse --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/t
 Usage: glimpse [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  Directory to analyze [default: .]
+  [PATH]  Directory/Files to analyze [default: .]
 
 Options:
       --interactive              Opens interactive file picker (? for help)
