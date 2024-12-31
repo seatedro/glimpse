@@ -83,7 +83,7 @@ Arguments:
   [PATH]  Directory to analyze [default: .]
 
 Options:
-  -I, --interactive              Opens interactive file picker (? for help)
+      --interactive              Opens interactive file picker (? for help)
   -i, --include <PATTERNS>       Additional patterns to include (e.g. "*.rs,*.go")
   -e, --exclude <PATTERNS>       Additional patterns to exclude
   -s, --max-size <BYTES>         Maximum file size in bytes
