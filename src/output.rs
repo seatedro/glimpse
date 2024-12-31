@@ -225,7 +225,7 @@ mod tests {
 
         let content = "Test content".to_string();
         let args = Cli {
-            path: PathBuf::from("."),
+            paths: vec![PathBuf::from(".")],
             include: None,
             exclude: None,
             max_size: Some(1000),

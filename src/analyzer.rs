@@ -1,4 +1,4 @@
-use crate::cli::{Cli, TokenizerType};
+use crate::cli::{Cli, Exclude, TokenizerType};
 use crate::file_picker::FilePicker;
 use crate::output::{display_token_counts, generate_output, handle_output, FileEntry};
 use crate::source_detection;
@@ -8,7 +8,7 @@ use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn process_directory(args: &Cli) -> Result<()> {
     // Configure thread pool if specified
@@ -35,19 +35,13 @@ pub fn process_directory(args: &Cli) -> Result<()> {
         .expect("output format should be set from config");
 
     // Build the walker with ignore patterns
-    let mut builder = WalkBuilder::new(&args.path);
+    let mut builder = WalkBuilder::new(&args.paths[0]);
     builder
         .max_depth(Some(max_depth))
         .hidden(!args.hidden)
         .git_ignore(!args.no_ignore)
         .ignore(!args.no_ignore);
 
-    // Add custom ignore/include patterns
-    if let Some(ref excludes) = args.exclude {
-        for pattern in excludes {
-            builder.add_ignore(pattern);
-        }
-    }
     if let Some(ref includes) = args.include {
         for pattern in includes {
             builder.add_custom_ignore_filename(pattern);
@@ -56,7 +50,8 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 
     // Collect all valid files
     let entries = if args.interactive {
-        let mut picker = FilePicker::new(args.path.clone(), max_size, args.hidden, args.no_ignore);
+        let mut picker =
+            FilePicker::new(args.paths[0].clone(), max_size, args.hidden, args.no_ignore);
         let selected_paths = picker.run()?;
 
         // Process selected files
@@ -67,24 +62,73 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                     .build()
                     .next()
                     .and_then(|r| r.ok());
-                entry.and_then(|e| process_file(&e, &args.path).ok())
+                entry.and_then(|e| process_file(&e, &args.paths[0]).ok())
             })
             .collect::<Vec<FileEntry>>()
     } else {
-        builder
-            .build()
-            .par_bridge()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
-                    && source_detection::is_source_file(entry.path())
-                    && entry
+        let mut all_entries = Vec::new();
+
+        for path in &args.paths {
+            if path.is_dir() {
+                let mut builder = WalkBuilder::new(path);
+                builder
+                    .max_depth(Some(max_depth))
+                    .hidden(!args.hidden)
+                    .git_ignore(!args.no_ignore)
+                    .ignore(!args.no_ignore);
+
+                if let Some(ref includes) = args.include {
+                    for pattern in includes {
+                        builder.add_custom_ignore_filename(pattern);
+                    }
+                }
+
+                let dir_entries: Vec<FileEntry> = builder
+                    .build()
+                    .par_bridge()
+                    .filter_map(|entry| entry.ok())
+                    .filter(|entry| {
+                        let should_exclude = is_excluded(entry, args);
+                        if should_exclude {
+                            println!("filtering out: {}", entry.path().display());
+                        }
+                        !should_exclude
+                    })
+                    .filter(|entry| {
+                        entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                            && source_detection::is_source_file(entry.path())
+                            && entry
+                                .metadata()
+                                .map(|m| m.len() <= max_size)
+                                .unwrap_or(false)
+                    })
+                    .filter_map(|entry| process_file(&entry, path).ok())
+                    .collect();
+
+                all_entries.extend(dir_entries);
+            } else if path.is_file() {
+                // Process single file
+                if source_detection::is_source_file(path)
+                    && path
                         .metadata()
                         .map(|m| m.len() <= max_size)
                         .unwrap_or(false)
-            })
-            .filter_map(|entry| process_file(&entry, &args.path).ok())
-            .collect()
+                {
+                    let entry = ignore::WalkBuilder::new(path)
+                        .build()
+                        .next()
+                        .and_then(|r| r.ok());
+                    if let Some(entry) = entry {
+                        if !is_excluded(&entry, args) {
+                            if let Ok(file_entry) = process_file(&entry, path) {
+                                all_entries.push(file_entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        all_entries
     };
     pb.finish();
 
@@ -100,6 +144,49 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_excluded(entry: &ignore::DirEntry, args: &Cli) -> bool {
+    if let Some(excludes) = &args.exclude {
+        let path_str = entry.path().to_string_lossy();
+
+        for exclude in excludes {
+            match exclude {
+                Exclude::Pattern(pattern) => {
+                    let pattern = if !pattern.starts_with("./") && !pattern.starts_with("/") {
+                        format!("./{}", pattern)
+                    } else {
+                        pattern.clone()
+                    };
+
+                    if let Ok(glob) = globset::GlobBuilder::new(&pattern)
+                        .case_insensitive(false)
+                        .build()
+                    {
+                        let matcher = glob.compile_matcher();
+                        let check_path = if !path_str.starts_with("./") {
+                            format!("./{}", path_str)
+                        } else {
+                            path_str.to_string()
+                        };
+
+                        if matcher.is_match(&check_path) {
+                            println!("excluded: {} (matched {})", path_str, pattern);
+                            return true;
+                        }
+                    }
+                }
+                Exclude::File(path) => {
+                    let matches = entry.path().ends_with(path);
+                    println!("file exclude {} matches?: {}", path.display(), matches); // debug
+                    if matches {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
@@ -124,7 +211,13 @@ pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
 }
 
 fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry> {
-    let relative_path = entry.path().strip_prefix(base_path)?;
+    let relative_path = if base_path.is_file() {
+        // If base_path is a file, use the file name as the relative path
+        base_path.file_name().map(PathBuf::from).unwrap_or_default()
+    } else {
+        // Otherwise, strip the base path as usual
+        entry.path().strip_prefix(base_path)?.to_path_buf()
+    };
     let content = fs::read_to_string(entry.path())?;
 
     Ok(FileEntry {

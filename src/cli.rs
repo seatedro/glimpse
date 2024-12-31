@@ -1,5 +1,6 @@
 use crate::config::Config;
 use clap::{Parser, ValueEnum};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -9,6 +10,13 @@ pub enum TokenizerType {
     HuggingFace,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Exclude {
+    File(PathBuf),
+    Pattern(String),
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "glimpse",
@@ -16,17 +24,17 @@ pub enum TokenizerType {
     version
 )]
 pub struct Cli {
-    /// Directory to analyze
+    /// Files or directories to analyze
     #[arg(value_parser = validate_path, default_value = ".")]
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 
     /// Additional patterns to include (e.g. "*.rs,*.go")
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
 
     /// Additional patterns to exclude
-    #[arg(short, long, value_delimiter = ',')]
-    pub exclude: Option<Vec<String>>,
+    #[arg(short, long, value_parser = parse_exclude, value_delimiter = ',')]
+    pub exclude: Option<Vec<Exclude>>,
 
     /// Maximum file size in bytes
     #[arg(short, long)]
@@ -126,8 +134,14 @@ fn validate_path(path: &str) -> Result<PathBuf, String> {
     if !path_buf.exists() {
         return Err(format!("Path '{}' does not exist", path));
     }
-    if !path_buf.is_dir() {
-        return Err(format!("Path '{}' is not a directory", path));
-    }
     Ok(path_buf)
+}
+
+fn parse_exclude(value: &str) -> Result<Exclude, String> {
+    let path = PathBuf::from(value);
+    if path.exists() {
+        Ok(Exclude::File(path))
+    } else {
+        Ok(Exclude::Pattern(value.to_string()))
+    }
 }

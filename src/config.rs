@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cli::Exclude;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_max_size")]
@@ -14,7 +16,7 @@ pub struct Config {
     pub default_output_format: String,
 
     #[serde(default)]
-    pub default_excludes: Vec<String>,
+    pub default_excludes: Vec<Exclude>,
 
     #[serde(default = "default_tokenizer_type")]
     pub default_tokenizer: String,
@@ -56,18 +58,17 @@ fn default_output_format() -> String {
     "both".to_string()
 }
 
-fn default_excludes() -> Vec<String> {
+fn default_excludes() -> Vec<Exclude> {
     vec![
         // Version control
-        String::from("**/.git/**"),
-        String::from("**/.svn/**"),
-        String::from("**/.hg/**"),
+        Exclude::Pattern("**/.git/**".to_string()),
+        Exclude::Pattern("**/.svn/**".to_string()),
+        Exclude::Pattern("**/.hg/**".to_string()),
         // Build artifacts and dependencies
-        String::from("**/target/**"),
-        String::from("**/node_modules/**"),
-        String::from("**/dist/**"),
-        String::from("**/build/**"),
-        // Add other defaults from patterns.rs
+        Exclude::Pattern("**/target/**".to_string()),
+        Exclude::Pattern("**/node_modules/**".to_string()),
+        Exclude::Pattern("**/dist/**".to_string()),
+        Exclude::Pattern("**/build/**".to_string()),
     ]
 }
 
