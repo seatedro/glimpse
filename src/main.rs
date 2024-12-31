@@ -1,6 +1,7 @@
 mod analyzer;
 mod cli;
 mod config;
+mod file_picker;
 mod output;
 mod source_detection;
 mod tokenizer;

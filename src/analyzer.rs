@@ -1,4 +1,5 @@
 use crate::cli::{Cli, TokenizerType};
+use crate::file_picker::FilePicker;
 use crate::output::{display_token_counts, generate_output, handle_output, FileEntry};
 use crate::source_detection;
 use crate::tokenizer::TokenCounter;
@@ -54,21 +55,37 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     }
 
     // Collect all valid files
-    let entries: Vec<FileEntry> = builder
-        .build()
-        .par_bridge()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
-                && source_detection::is_source_file(entry.path())
-                && entry
-                    .metadata()
-                    .map(|m| m.len() <= max_size)
-                    .unwrap_or(false)
-        })
-        .filter_map(|entry| process_file(&entry, &args.path).ok())
-        .collect();
+    let entries = if args.interactive {
+        let mut picker = FilePicker::new(args.path.clone(), max_size, args.hidden, args.no_ignore);
+        let selected_paths = picker.run()?;
 
+        // Process selected files
+        selected_paths
+            .into_iter()
+            .filter_map(|path| {
+                let entry = ignore::WalkBuilder::new(&path)
+                    .build()
+                    .next()
+                    .and_then(|r| r.ok());
+                entry.and_then(|e| process_file(&e, &args.path).ok())
+            })
+            .collect::<Vec<FileEntry>>()
+    } else {
+        builder
+            .build()
+            .par_bridge()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                    && source_detection::is_source_file(entry.path())
+                    && entry
+                        .metadata()
+                        .map(|m| m.len() <= max_size)
+                        .unwrap_or(false)
+            })
+            .filter_map(|entry| process_file(&entry, &args.path).ok())
+            .collect()
+    };
     pb.finish();
 
     // Generate output

@@ -75,6 +75,10 @@ pub struct Cli {
     /// Path to local tokenizer file
     #[arg(long)]
     pub tokenizer_file: Option<PathBuf>,
+
+    /// Interactive mode
+    #[arg(long)]
+    pub interactive: bool,
 }
 
 impl Cli {

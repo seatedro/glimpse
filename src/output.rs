@@ -240,6 +240,7 @@ mod tests {
             model: None,
             tokenizer: Some(crate::cli::TokenizerType::Tiktoken),
             tokenizer_file: None,
+            interactive: false,
         };
 
         handle_output(content.clone(), &args).unwrap();
