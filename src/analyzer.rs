@@ -89,9 +89,6 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                     .filter_map(|entry| entry.ok())
                     .filter(|entry| {
                         let should_exclude = is_excluded(entry, args);
-                        if should_exclude {
-                            println!("filtering out: {}", entry.path().display());
-                        }
                         !should_exclude
                     })
                     .filter(|entry| {
@@ -171,14 +168,12 @@ fn is_excluded(entry: &ignore::DirEntry, args: &Cli) -> bool {
                         };
 
                         if matcher.is_match(&check_path) {
-                            println!("excluded: {} (matched {})", path_str, pattern);
                             return true;
                         }
                     }
                 }
                 Exclude::File(path) => {
                     let matches = entry.path().ends_with(path);
-                    println!("file exclude {} matches?: {}", path.display(), matches); // debug
                     if matches {
                         return true;
                     }
