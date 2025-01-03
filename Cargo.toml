@@ -1,9 +1,10 @@
 [package]
 name = "glimpse"
-version = "0.6.8"
+version = "0.6.9"
 edition = "2021"
 description = "A blazingly fast tool for peeking at codebases. Perfect for loading your codebase into an LLM's context."
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.95"
@@ -24,3 +25,7 @@ tiktoken-rs = "0.6.0"
 tokenizers = { version = "0.21.0", features = ["http"] }
 toml = "0.8.19"
 walkdir = "2.5.0"
+
+[build-dependencies]
+serde = { version = "1.0.217", features = ["derive"] }
+serde_yaml = "0.9.34"
