@@ -18,8 +18,8 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "glimpse";
-          version = "0.6.9";
-          
+          version = "0.6.10";
+
           src = ./.;
 
           cargoLock = {

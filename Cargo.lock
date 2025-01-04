@@ -720,10 +720,11 @@ dependencies = [
 
 [[package]]
 name = "glimpse"
-version = "0.6.9"
+version = "0.6.10"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64 0.22.1",
  "clap",
  "colored",
  "crossterm",
