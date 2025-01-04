@@ -40,10 +40,10 @@ nix profile install github:seatedro/glimpse
 Using an AUR helper:
 ```bash
 # Using yay
-yay -S glimpse-rust-git
+yay -S glimpse
 
 # Using paru
-paru -S glimpse-rust-git
+paru -S glimpse
 ```
 
 ## Usage
