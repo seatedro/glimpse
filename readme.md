@@ -37,6 +37,15 @@ nix profile install github:seatedro/glimpse
 }
 ```
 
+Using an AUR helper:
+```bash
+# Using yay
+yay -S glimpse
+
+# Using paru
+paru -S glimpse
+```
+
 ## Usage
 
 Basic usage:
