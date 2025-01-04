@@ -143,7 +143,7 @@ pub fn handle_output(content: String, args: &Cli) -> Result<()> {
             Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
             Err(_) => {
                 match try_copy_with_osc52(&content) {
-                    Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
+                    Ok(_) => println!("Context prepared! (using terminal clipboard) Paste into your LLM of choice + Profit."),
                     Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e)
                 }
             },
