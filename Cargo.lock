@@ -724,6 +724,7 @@ version = "0.6.9"
 dependencies = [
  "anyhow",
  "arboard",
+ "base64 0.22.1",
  "clap",
  "colored",
  "crossterm",

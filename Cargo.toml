@@ -9,6 +9,7 @@ build = "build.rs"
 [dependencies]
 anyhow = "1.0.95"
 arboard = { version = "3.4.1", features = ["wayland-data-control"] }
+base64 = "0.22.1"
 clap = { version = "4.5.23", features = ["derive"] }
 colored = "2.2.0"
 crossterm = "0.28.1"

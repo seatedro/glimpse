@@ -1,5 +1,6 @@
 use crate::{cli::Cli, tokenizer::TokenCounter};
 use anyhow::Result;
+use base64::Engine;
 use std::{fs, path::PathBuf};
 
 #[derive(Debug, Clone)]
@@ -121,6 +122,15 @@ fn generate_files(entries: &[FileEntry]) -> Result<String> {
     Ok(output)
 }
 
+fn try_copy_with_osc52(content: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // OSC 52 sequence to set clipboard for special cases (like SSH)
+    print!(
+        "\x1B]52;c;{}\x07",
+        base64::engine::general_purpose::STANDARD.encode(content)
+    );
+    Ok(())
+}
+
 pub fn handle_output(content: String, args: &Cli) -> Result<()> {
     // Print to stdout if no other output method is specified
     if args.print {
@@ -131,7 +141,12 @@ pub fn handle_output(content: String, args: &Cli) -> Result<()> {
     if !args.print {
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(content.clone())) {
             Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
-            Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e),
+            Err(_) => {
+                match try_copy_with_osc52(&content) {
+                    Ok(_) => println!("Context prepared! Paste into your LLM of choice + Profit."),
+                    Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e)
+                }
+            },
         }
     }
 
