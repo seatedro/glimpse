@@ -145,15 +145,16 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 
 fn is_excluded(entry: &ignore::DirEntry, args: &Cli) -> bool {
     if let Some(excludes) = &args.exclude {
-        let path_str = entry.path().to_string_lossy();
-
+        let path = entry.path();
         for exclude in excludes {
             match exclude {
                 Exclude::Pattern(pattern) => {
-                    let pattern = if !pattern.starts_with("./") && !pattern.starts_with("/") {
-                        format!("./{}", pattern)
+                    // Normalize the pattern
+                    let pattern = pattern.trim_start_matches("./"); // Remove leading `./`
+                    let pattern = if pattern.ends_with('/') {
+                        format!("{}**/*", pattern) // If it ends with `/`, match all contents
                     } else {
-                        pattern.clone()
+                        pattern.to_string()
                     };
 
                     if let Ok(glob) = globset::GlobBuilder::new(&pattern)
@@ -161,20 +162,24 @@ fn is_excluded(entry: &ignore::DirEntry, args: &Cli) -> bool {
                         .build()
                     {
                         let matcher = glob.compile_matcher();
-                        let check_path = if !path_str.starts_with("./") {
-                            format!("./{}", path_str)
-                        } else {
-                            path_str.to_string()
-                        };
-
-                        if matcher.is_match(&check_path) {
+                        
+                        // ✅ Only check full path unless explicitly prefixed with `**/`
+                        if matcher.is_match(path) {
                             return true;
+                        }
+
+                        // ✅ If pattern starts with `**/`, allow ancestor matching
+                        if pattern.starts_with("**/") {
+                            for ancestor in path.ancestors() {
+                                if matcher.is_match(ancestor) {
+                                    return true;
+                                }
+                            }
                         }
                     }
                 }
                 Exclude::File(path) => {
-                    let matches = entry.path().ends_with(path);
-                    if matches {
+                    if entry.path().ends_with(path) {
                         return true;
                     }
                 }
