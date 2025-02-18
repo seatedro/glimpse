@@ -24,7 +24,7 @@ pub enum Exclude {
     Pattern(String),
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(
     name = "glimpse",
     about = "A blazingly fast tool for peeking at codebases",
@@ -151,6 +151,12 @@ impl Cli {
         }
 
         Ok(cli)
+    }
+
+    pub fn with_path(&self, path: &str) -> Self {
+        let mut new_cli = self.clone();
+        new_cli.paths = vec![path.to_string()];
+        new_cli
     }
 }
 

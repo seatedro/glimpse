@@ -2,6 +2,7 @@ mod analyzer;
 mod cli;
 mod config;
 mod file_picker;
+mod git_processor;
 mod output;
 mod source_detection;
 mod tokenizer;
@@ -10,6 +11,7 @@ mod url_processor;
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
 use crate::config::{get_config_path, load_config};
+use crate::git_processor::GitProcessor;
 use crate::url_processor::UrlProcessor;
 use std::fs;
 
@@ -24,7 +26,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     for path in &args.paths {
-        if path.starts_with("http://") || path.starts_with("https://") {
+        if GitProcessor::is_git_url(path) {
+            let git_processor = GitProcessor::new()?;
+            let repo_path = git_processor.process_repo(path)?;
+            process_directory(&args.with_path(repo_path.to_str().unwrap()))?;
+        } else if path.starts_with("http://") || path.starts_with("https://") {
             let link_depth = args.link_depth.unwrap_or(config.default_link_depth);
             let traverse = args.traverse_links || config.traverse_links;
 
