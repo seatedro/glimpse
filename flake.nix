@@ -18,7 +18,7 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "glimpse";
-          version = "0.6.10";
+          version = "0.7.0";
 
           src = ./.;
 
@@ -28,9 +28,17 @@
 
           nativeBuildInputs = with pkgs; [
             pkg-config
+            openssl
           ];
 
-          buildInputs = with pkgs; [ ];
+          buildInputs = with pkgs; [
+            openssl
+            darwin.apple_sdk.frameworks.Security
+            darwin.apple_sdk.frameworks.SystemConfiguration
+          ] ++ lib.optionals stdenv.isDarwin [
+            darwin.apple_sdk.frameworks.CoreFoundation
+            darwin.apple_sdk.frameworks.CoreServices
+          ];
 
           checkFlags = [
             "--skip=tokenizer::tests::test_hf_counter"
@@ -49,7 +57,20 @@
           buildInputs = with pkgs; [
             rust-bin.stable.latest.default
             pkg-config
+            openssl
+            darwin.apple_sdk.frameworks.Security
+            darwin.apple_sdk.frameworks.SystemConfiguration
+          ] ++ lib.optionals stdenv.isDarwin [
+            darwin.apple_sdk.frameworks.CoreFoundation
+            darwin.apple_sdk.frameworks.CoreServices
           ];
+
+          # Set OPENSSL_DIR for local development
+          shellHook = ''
+            export OPENSSL_DIR="${pkgs.openssl.dev}"
+            export OPENSSL_INCLUDE_DIR="${pkgs.openssl.dev}/include"
+            export OPENSSL_LIB_DIR="${pkgs.openssl.out}/lib"
+          '';
         };
       }
     );
