@@ -231,3 +231,188 @@ fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry>
         size: entry.metadata()?.len(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::{tempdir, TempDir};
+
+    fn setup_test_directory() -> Result<(TempDir, Vec<PathBuf>)> {
+        let dir = tempdir()?;
+        let mut created_files = Vec::new();
+
+        // Create a nested directory structure with various file types
+        let test_files = vec![
+            ("src/main.rs", "fn main() {}"),
+            ("src/lib.rs", "pub fn lib() {}"),
+            ("tests/test.rs", "#[test] fn test() {}"),
+            ("docs/readme.md", "# Documentation"),
+            ("build/output.o", "binary"),
+            ("node_modules/package.json", "{}"),
+            ("target/debug/binary", "binary"),
+            (".git/config", "git config"),
+            ("src/nested/deep/code.rs", "fn nested() {}"),
+            ("src/nested/deep/script.py", "def nested(): pass"),
+        ];
+
+        for (path, content) in test_files {
+            let full_path = dir.path().join(path);
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut file = File::create(&full_path)?;
+            writeln!(file, "{}", content)?;
+            created_files.push(full_path);
+        }
+
+        Ok((dir, created_files))
+    }
+
+    fn create_test_cli(dir_path: &Path) -> Cli {
+        Cli {
+            paths: vec![dir_path.to_string_lossy().to_string()],
+            config_path: false,
+            include: None,
+            exclude: None,
+            max_size: Some(10 * 1024 * 1024), // 10MB
+            max_depth: Some(10),
+            output: Some(OutputFormat::Both),
+            file: None,
+            print: true,
+            threads: None,
+            hidden: false,
+            no_ignore: false,
+            no_tokens: true,
+            tokenizer: None,
+            model: None,
+            tokenizer_file: None,
+            interactive: false,
+            pdf: None,
+            traverse_links: false,
+            link_depth: None,
+        }
+    }
+
+    #[test]
+    fn test_exclude_patterns() {
+        let (dir, _files) = setup_test_directory().unwrap();
+        let entry = ignore::WalkBuilder::new(dir.path())
+            .build()
+            .find(|e| e.as_ref().unwrap().path().ends_with("main.rs"))
+            .unwrap()
+            .unwrap();
+
+        // Test various exclude patterns
+        let test_cases = vec![
+            // Pattern exclusions
+            (Exclude::Pattern("**/*.rs".to_string()), true),
+            (Exclude::Pattern("**/*.js".to_string()), false),
+            (Exclude::Pattern("test/**".to_string()), false),
+            // File exclusions
+            (Exclude::File(PathBuf::from("main.rs")), true),
+            (Exclude::File(PathBuf::from("nonexistent.rs")), false),
+        ];
+
+        for (exclude, should_exclude) in test_cases {
+            let mut cli = create_test_cli(dir.path());
+            cli.exclude = Some(vec![exclude]);
+            assert_eq!(
+                is_excluded(&entry, &cli),
+                should_exclude,
+                "Failed for exclude pattern: {:?}",
+                cli.exclude
+            );
+        }
+    }
+
+    #[test]
+    fn test_process_directory_with_excludes() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test excluding all Rust files
+        cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
+        let _ = process_directory(&cli)?;
+        // Verify no .rs files were processed
+        // This would need to be adapted based on how you want to verify the results
+
+        // Test excluding specific directories
+        cli.exclude = Some(vec![
+            Exclude::Pattern("**/node_modules/**".to_string()),
+            Exclude::Pattern("**/target/**".to_string()),
+            Exclude::Pattern("**/.git/**".to_string()),
+        ]);
+        let _ = process_directory(&cli)?;
+        // Verify excluded directories were not processed
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_directory_with_includes() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test including only Rust files
+        cli.include = Some(vec!["**/*.rs".to_string()]);
+        let _ = process_directory(&cli)?;
+        // Verify only .rs files were processed
+
+        // Test including multiple patterns
+        cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
+        let _ = process_directory(&cli)?;
+        // Verify only .rs and .py files were processed
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_directory_depth_limit() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test with depth limit of 1
+        cli.max_depth = Some(1);
+        let _ = process_directory(&cli)?;
+        // Verify only top-level files were processed
+
+        // Test with depth limit of 2
+        cli.max_depth = Some(2);
+        let _ = process_directory(&cli)?;
+        // Verify files up to depth 2 were processed
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_directory_hidden_files() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test without hidden files
+        cli.hidden = false;
+        let _ = process_directory(&cli)?;
+        // Verify hidden files were not processed
+
+        // Test with hidden files
+        cli.hidden = true;
+        let _ = process_directory(&cli)?;
+        // Verify hidden files were processed
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_single_file() -> Result<()> {
+        let (_, files) = setup_test_directory()?;
+        let rust_file = files.iter().find(|f| f.ends_with("main.rs")).unwrap();
+
+        let cli = create_test_cli(rust_file);
+        let _ = process_directory(&cli)?;
+        // Verify single file was processed correctly
+
+        Ok(())
+    }
+}

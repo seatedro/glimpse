@@ -225,3 +225,184 @@ impl UrlProcessor {
         Ok(links)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mockito::Server;
+
+    #[test]
+    fn test_new_processor() {
+        let processor = UrlProcessor::new(2);
+        assert_eq!(processor.max_depth, 2);
+        assert!(processor.visited.is_empty());
+    }
+
+    #[test]
+    fn test_html_to_markdown_basic() {
+        let processor = UrlProcessor::new(1);
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        let html = r#"
+            <body>
+                <h1>Test Heading</h1>
+                <p>This is a test paragraph.</p>
+                <ul>
+                    <li>Item 1</li>
+                    <li>Item 2</li>
+                </ul>
+            </body>
+        "#;
+
+        let markdown = processor.html_to_markdown(html, &base_url);
+        assert!(markdown.contains("# Test Heading"));
+        assert!(markdown.contains("This is a test paragraph"));
+        assert!(markdown.contains("- Item 1"));
+        assert!(markdown.contains("- Item 2"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_links() {
+        let processor = UrlProcessor::new(1);
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        let html = r#"
+            <body>
+                <p>Check out this <a href="/relative/link">relative link</a></p>
+                <p>And this <a href="https://absolute.com">absolute link</a></p>
+            </body>
+        "#;
+
+        let markdown = processor.html_to_markdown(html, &base_url);
+        assert!(markdown.contains("[relative link](https://example.com/relative/link)"));
+        assert!(markdown.contains("[absolute link](https://absolute.com/)"));
+    }
+
+    #[test]
+    fn test_extract_links() {
+        let processor = UrlProcessor::new(1);
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        let html = r#"
+            <body>
+                <a href="/page1">Page 1</a>
+                <a href="https://other.com/page2">Page 2</a>
+                <a href="mailto:test@example.com">Email</a>
+                <a href="\#section">Section</a>
+            </body>
+        "#;
+
+        let links = processor.extract_links(html, &base_url).unwrap();
+        assert_eq!(links.len(), 3); // Only http(s) links should be included
+        assert!(links.contains(&"https://example.com/page1".to_string()));
+        assert!(links.contains(&"https://other.com/page2".to_string()));
+        assert!(links.contains(&"https://example.com/#section".to_string()));
+    }
+
+    #[test]
+    fn test_process_url_with_mocked_server() {
+        let mut server = Server::new();
+        let url = server.url();
+        let _m = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"
+                <html>
+                    <body>
+                        <h1>Test Page</h1>
+                        <p>This is a test.</p>
+                        <a href="/subpage">Subpage</a>
+                    </body>
+                </html>
+            "#,
+            )
+            .create();
+
+        let mut processor = UrlProcessor::new(1);
+        let result = processor.process_url(&url, false);
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(content.contains("# Test Page"));
+        assert!(content.contains("This is a test"));
+    }
+
+    #[test]
+    fn test_process_url_with_link_traversal() {
+        let mut server = Server::new();
+        let url = server.url();
+        let _m1 = server
+            .mock("GET", "/")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"
+                <html>
+                    <body>
+                        <h1>Main Page</h1>
+                        <a href="/subpage">Subpage</a>
+                    </body>
+                </html>
+            "#,
+            )
+            .create();
+
+        let _m2 = server
+            .mock("GET", "/subpage")
+            .with_status(200)
+            .with_header("content-type", "text/html")
+            .with_body(
+                r#"
+                <html>
+                    <body>
+                        <h1>Subpage</h1>
+                        <p>Subpage content.</p>
+                    </body>
+                </html>
+            "#,
+            )
+            .create();
+
+        let mut processor = UrlProcessor::new(1);
+        let result = processor.process_url(&url, true);
+
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert!(content.contains("# Main Page"));
+        assert!(content.contains("# Subpage"));
+        assert!(content.contains("Subpage content"));
+    }
+
+    #[test]
+    fn test_process_node_formatting() {
+        let processor = UrlProcessor::new(1);
+        let base_url = Url::parse("https://example.com").unwrap();
+
+        let html = r#"
+            <body>
+                <h1>Heading 1</h1>
+                <h2>Heading 2</h2>
+                <p>Normal paragraph</p>
+                <blockquote>Quote text</blockquote>
+                <code>Code block</code>
+                <ul>
+                    <li>List item 1</li>
+                    <li>List item 2</li>
+                </ul>
+            </body>
+        "#;
+
+        let markdown = processor.html_to_markdown(html, &base_url);
+
+        assert!(markdown.contains("# Heading 1"));
+        assert!(markdown.contains("# Heading 1"));
+        assert!(markdown.contains("## Heading 2"));
+        assert!(markdown.contains("Normal paragraph"));
+        assert!(markdown.contains("> Quote text"));
+        assert!(markdown.contains("Code block"));
+        assert!(markdown.contains("- List item 1"));
+        assert!(markdown.contains("- List item 2"));
+    }
+}
