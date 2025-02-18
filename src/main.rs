@@ -8,14 +8,18 @@ mod tokenizer;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
-use crate::config::load_config;
+use crate::config::{get_config_path, load_config};
 
 fn main() -> anyhow::Result<()> {
-    // Load config first
     let config = load_config()?;
 
-    // Parse CLI args with config as context
     let args = Cli::parse_with_config(&config)?;
+
+    if args.config_path {
+        let path = get_config_path()?;
+        println!("{}", path.display());
+        return Ok(());
+    }
 
     process_directory(&args)
 }

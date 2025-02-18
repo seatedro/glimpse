@@ -3,6 +3,13 @@ use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
+pub enum OutputFormat {
+    Tree,
+    Files,
+    Both,
+}
+
 #[derive(Debug, Clone, ValueEnum)]
 pub enum TokenizerType {
     Tiktoken,
@@ -28,6 +35,10 @@ pub struct Cli {
     #[arg(value_parser = validate_path, default_value = ".")]
     pub paths: Vec<PathBuf>,
 
+    /// Print the config file path and exit
+    #[arg(long)]
+    pub config_path: bool,
+
     /// Additional patterns to include (e.g. "*.rs,*.go")
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
@@ -45,8 +56,8 @@ pub struct Cli {
     pub max_depth: Option<usize>,
 
     /// Output format (tree, files, or both)
-    #[arg(short, long)]
-    pub output: Option<String>,
+    #[arg(short, long, value_enum)]
+    pub output: Option<OutputFormat>,
 
     /// Output file path (optional)
     #[arg(short = 'f', long)]
@@ -87,6 +98,10 @@ pub struct Cli {
     /// Interactive mode
     #[arg(long)]
     pub interactive: bool,
+
+    /// Output as Pdf
+    #[arg(long)]
+    pub pdf: Option<PathBuf>,
 }
 
 impl Cli {
@@ -96,7 +111,9 @@ impl Cli {
         // Apply config defaults if CLI args aren't specified
         cli.max_size = cli.max_size.or(Some(config.max_size));
         cli.max_depth = cli.max_depth.or(Some(config.max_depth));
-        cli.output = cli.output.or(Some(config.default_output_format.clone()));
+        cli.output = cli.output.or(Some(OutputFormat::from(
+            config.default_output_format.clone(),
+        )));
 
         // Merge excludes from config and CLI
         if let Some(mut excludes) = cli.exclude.take() {

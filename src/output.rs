@@ -1,7 +1,11 @@
-use crate::{cli::Cli, tokenizer::TokenCounter};
+use crate::{
+    cli::{Cli, OutputFormat},
+    tokenizer::TokenCounter,
+};
 use anyhow::Result;
 use base64::Engine;
-use std::{fs, path::PathBuf};
+use printpdf::*;
+use std::{fs, io::BufWriter, path::PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -10,25 +14,24 @@ pub struct FileEntry {
     pub size: u64,
 }
 
-pub fn generate_output(entries: &[FileEntry], format: &str) -> Result<String> {
+pub fn generate_output(entries: &[FileEntry], format: OutputFormat) -> Result<String> {
     let mut output = String::new();
 
     match format {
-        "tree" => {
+        OutputFormat::Tree => {
             output.push_str("Directory Structure:\n");
             output.push_str(&generate_tree(entries)?);
         }
-        "files" => {
+        OutputFormat::Files => {
             output.push_str("File Contents:\n");
             output.push_str(&generate_files(entries)?);
         }
-        "both" => {
+        OutputFormat::Both => {
             output.push_str("Directory Structure:\n");
             output.push_str(&generate_tree(entries)?);
             output.push_str("\nFile Contents:\n");
             output.push_str(&generate_files(entries)?);
         }
-        _ => output.push_str("Invalid output format specified\n"),
     }
 
     // Add summary
@@ -159,6 +162,86 @@ pub fn handle_output(content: String, args: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub fn generate_pdf(entries: &[FileEntry], format: OutputFormat) -> Result<Vec<u8>> {
+    let (doc, page1, layer1) = PdfDocument::new("Source Code", Mm(210.0), Mm(297.0), "Layer 1");
+    let mut current_layer = doc.get_page(page1).get_layer(layer1);
+
+    let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
+    let mut y_position = 280.0;
+
+    // Add tree if specified
+    match format {
+        OutputFormat::Tree | OutputFormat::Both => {
+            current_layer.use_text(
+                "Directory Structure:",
+                14.0,
+                Mm(10.0),
+                Mm(y_position),
+                &font,
+            );
+            y_position -= 10.0;
+
+            let tree = generate_tree(entries)?;
+            for line in tree.lines() {
+                if y_position < 20.0 {
+                    let (page2, layer2) = doc.add_page(Mm(210.0), Mm(297.0), "New Layer");
+                    current_layer = doc.get_page(page2).get_layer(layer2);
+                    y_position = 280.0;
+                }
+                current_layer.use_text(line, 10.0, Mm(10.0), Mm(y_position), &font);
+                y_position -= 5.0;
+            }
+
+            // New page for files
+            let (next_page, next_layer) = doc.add_page(Mm(210.0), Mm(297.0), "New Layer");
+            current_layer = doc.get_page(next_page).get_layer(next_layer);
+            y_position = 280.0;
+        }
+        _ => {}
+    }
+
+    for entry in entries {
+        // Start at top of each new page
+        y_position = 280.0;
+
+        // Add file path as header
+        current_layer.use_text(
+            &format!("File: {}", entry.path.display()),
+            14.0,
+            Mm(10.0),
+            Mm(y_position),
+            &font,
+        );
+        y_position -= 10.0;
+
+        // Add separator line
+        current_layer.use_text(&"=".repeat(48), 12.0, Mm(10.0), Mm(y_position), &font);
+        y_position -= 10.0;
+
+        // Add file content in smaller font
+        for line in entry.content.lines() {
+            if y_position < 20.0 {
+                // Create new page when we run out of space
+                let (page2, layer2) = doc.add_page(Mm(210.0), Mm(297.0), "New Layer");
+                current_layer = doc.get_page(page2).get_layer(layer2);
+                y_position = 280.0;
+            }
+
+            current_layer.use_text(line, 10.0, Mm(10.0), Mm(y_position), &font);
+            y_position -= 5.0;
+        }
+
+        // Create new page for next file
+        let (next_page, next_layer) = doc.add_page(Mm(210.0), Mm(297.0), "New Layer");
+        current_layer = doc.get_page(next_page).get_layer(next_layer);
+    }
+
+    // Save to memory buffer
+    let mut buffer = Vec::new();
+    doc.save(&mut BufWriter::new(&mut buffer))?;
+    Ok(buffer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,25 +293,21 @@ mod tests {
         let entries = create_test_entries();
 
         // Test tree format
-        let tree_output = generate_output(&entries, "tree").unwrap();
+        let tree_output = generate_output(&entries, OutputFormat::Tree).unwrap();
         assert!(tree_output.contains("Directory Structure:"));
         assert!(tree_output.contains("src/"));
         assert!(tree_output.contains("main.rs"));
 
         // Test files format
-        let files_output = generate_output(&entries, "files").unwrap();
+        let files_output = generate_output(&entries, OutputFormat::Files).unwrap();
         assert!(files_output.contains("File Contents:"));
         assert!(files_output.contains("fn main()"));
         assert!(files_output.contains("pub fn helper()"));
 
         // Test both format
-        let both_output = generate_output(&entries, "both").unwrap();
+        let both_output = generate_output(&entries, OutputFormat::Both).unwrap();
         assert!(both_output.contains("Directory Structure:"));
         assert!(both_output.contains("File Contents:"));
-
-        // Test invalid format
-        let invalid_output = generate_output(&entries, "invalid").unwrap();
-        assert!(invalid_output.contains("Invalid output format"));
     }
 
     #[test]
@@ -245,7 +324,7 @@ mod tests {
             exclude: None,
             max_size: Some(1000),
             max_depth: Some(10),
-            output: Some("both".to_string()),
+            output: Some(OutputFormat::Both),
             file: Some(temp_file.clone()),
             print: false,
             threads: None,
@@ -256,6 +335,7 @@ mod tests {
             tokenizer: Some(crate::cli::TokenizerType::Tiktoken),
             tokenizer_file: None,
             interactive: false,
+            pdf: None,
         };
 
         handle_output(content.clone(), &args).unwrap();

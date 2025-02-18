@@ -1,6 +1,8 @@
-use crate::cli::{Cli, Exclude, TokenizerType};
+use crate::cli::{Cli, Exclude, OutputFormat, TokenizerType};
 use crate::file_picker::FilePicker;
-use crate::output::{display_token_counts, generate_output, handle_output, FileEntry};
+use crate::output::{
+    display_token_counts, generate_output, generate_pdf, handle_output, FileEntry,
+};
 use crate::source_detection;
 use crate::tokenizer::TokenCounter;
 use anyhow::Result;
@@ -31,7 +33,7 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     let max_depth = args.max_depth.expect("max_depth should be set from config");
     let output_format = args
         .output
-        .as_deref()
+        .clone()
         .expect("output format should be set from config");
 
     // Build the walker with ignore patterns
@@ -129,11 +131,15 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     };
     pb.finish();
 
-    // Generate output
-    let output = generate_output(&entries, output_format)?;
-
-    // Handle output (print/copy/save)
-    handle_output(output, args)?;
+    if let Some(pdf_path) = &args.pdf {
+        let pdf_data = generate_pdf(&entries, args.output.clone().unwrap_or(OutputFormat::Both))?;
+        fs::write(pdf_path, pdf_data)?;
+        println!("PDF output written to: {}", pdf_path.display());
+    } else {
+        // Handle output (print/copy/save)
+        let output = generate_output(&entries, output_format)?;
+        handle_output(output, args)?;
+    }
 
     if !args.no_tokens {
         let counter = create_token_counter(args)?;
