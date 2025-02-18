@@ -52,8 +52,12 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 
     // Collect all valid files
     let entries = if args.interactive {
-        let mut picker =
-            FilePicker::new(args.paths[0].clone(), max_size, args.hidden, args.no_ignore);
+        let mut picker = FilePicker::new(
+            PathBuf::from(&args.paths[0]),
+            max_size,
+            args.hidden,
+            args.no_ignore,
+        );
         let selected_paths = picker.run()?;
 
         // Process selected files
@@ -64,13 +68,13 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                     .build()
                     .next()
                     .and_then(|r| r.ok());
-                entry.and_then(|e| process_file(&e, &args.paths[0]).ok())
+                entry.and_then(|e| process_file(&e, &path).ok())
             })
             .collect::<Vec<FileEntry>>()
     } else {
         let mut all_entries = Vec::new();
-
         for path in &args.paths {
+            let path = std::path::Path::new(path);
             if path.is_dir() {
                 let mut builder = WalkBuilder::new(path);
                 builder

@@ -31,9 +31,9 @@ pub enum Exclude {
     version
 )]
 pub struct Cli {
-    /// Files or directories to analyze
-    #[arg(value_parser = validate_path, default_value = ".")]
-    pub paths: Vec<PathBuf>,
+    /// Files, directories, or URLs to analyze
+    #[arg(value_parser = validate_input, default_value = ".")]
+    pub paths: Vec<String>,
 
     /// Print the config file path and exit
     #[arg(long)]
@@ -102,6 +102,14 @@ pub struct Cli {
     /// Output as Pdf
     #[arg(long)]
     pub pdf: Option<PathBuf>,
+
+    /// Traverse sublinks when processing URLs
+    #[arg(long)]
+    pub traverse_links: bool,
+
+    /// Maximum depth to traverse sublinks (default: 1)
+    #[arg(long)]
+    pub link_depth: Option<usize>,
 }
 
 impl Cli {
@@ -146,12 +154,17 @@ impl Cli {
     }
 }
 
-fn validate_path(path: &str) -> Result<PathBuf, String> {
-    let path_buf = PathBuf::from(path);
-    if !path_buf.exists() {
-        return Err(format!("Path '{}' does not exist", path));
+fn validate_input(input: &str) -> Result<String, String> {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        return Ok(input.to_string());
     }
-    Ok(path_buf)
+
+    let path = PathBuf::from(input);
+    if path.exists() {
+        Ok(input.to_string())
+    } else {
+        Err(format!("Path '{}' does not exist", input))
+    }
 }
 
 fn parse_exclude(value: &str) -> Result<Exclude, String> {

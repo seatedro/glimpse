@@ -4,10 +4,10 @@ use std::fs::File;
 use std::io::Write;
 use std::path::Path;
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct Language {
     #[serde(default)]
-    r#type: Option<String>,
+    r#_type: Option<String>,
     #[serde(default)]
     extensions: Vec<String>,
     #[serde(default)]
@@ -15,7 +15,7 @@ struct Language {
     #[serde(default)]
     interpreters: Vec<String>,
     #[serde(default)]
-    language_id: Option<i32>,
+    _language_id: Option<i32>,
 }
 
 fn main() {

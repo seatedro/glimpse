@@ -319,7 +319,7 @@ mod tests {
 
         let content = "Test content".to_string();
         let args = Cli {
-            paths: vec![PathBuf::from(".")],
+            paths: vec![".".to_string()],
             include: None,
             exclude: None,
             max_size: Some(1000),
@@ -336,6 +336,9 @@ mod tests {
             tokenizer_file: None,
             interactive: false,
             pdf: None,
+            traverse_links: false,
+            link_depth: None,
+            config_path: false,
         };
 
         handle_output(content.clone(), &args).unwrap();

@@ -56,7 +56,7 @@ impl From<BackwardsCompatOutputFormat> for OutputFormat {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     #[serde(default = "default_max_size")]
     pub max_size: u64,
@@ -75,17 +75,25 @@ pub struct Config {
 
     #[serde(default = "default_tokenizer_model")]
     pub default_tokenizer_model: String,
+
+    #[serde(default = "default_link_depth")]
+    pub default_link_depth: usize,
+
+    #[serde(default)]
+    pub traverse_links: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config {
+        Self {
             max_size: default_max_size(),
             max_depth: default_max_depth(),
-            default_output_format: default_output_format().into(),
+            default_output_format: default_output_format(),
             default_excludes: default_excludes(),
             default_tokenizer: default_tokenizer_type(),
             default_tokenizer_model: default_tokenizer_model(),
+            default_link_depth: default_link_depth(),
+            traverse_links: false,
         }
     }
 }
@@ -122,6 +130,10 @@ fn default_excludes() -> Vec<Exclude> {
         Exclude::Pattern("**/dist/**".to_string()),
         Exclude::Pattern("**/build/**".to_string()),
     ]
+}
+
+fn default_link_depth() -> usize {
+    1
 }
 
 pub fn load_config() -> anyhow::Result<Config> {
