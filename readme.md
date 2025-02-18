@@ -12,6 +12,9 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 - 📋 Clipboard support
 - 🎨 Customizable file type detection
 - 🥷 Respects .gitignore automatically
+- 🔗 Web content processing with Markdown conversion
+- 📦 Git repository support
+- 🌐 URL traversal with configurable depth
 
 ## Installation
 
@@ -50,11 +53,20 @@ paru -S glimpse
 
 Basic usage:
 ```bash
+# Process a local directory
 glimpse /path/to/project
 
+# Process multiple files
 glimpse file1 file2 file3
 
-glimpse /path/to/project -e "*.h"
+# Process a Git repository
+glimpse https://github.com/username/repo.git
+
+# Process a web page and convert to Markdown
+glimpse https://example.com/docs
+
+# Process a web page and its linked pages
+glimpse https://example.com/docs --traverse-links --link-depth 2
 ```
 
 Common options:
@@ -85,6 +97,9 @@ glimpse --tokenizer huggingface --model gpt2 /path/to/project
 
 # Use custom local tokenizer file
 glimpse --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/to/project
+
+# Process a Git repository and save as PDF
+glimpse https://github.com/username/repo.git --pdf output.pdf
 ```
 
 ## CLI Options
@@ -93,7 +108,7 @@ glimpse --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/t
 Usage: glimpse [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  Directory/Files to analyze [default: .]
+  [PATH]  Directory/Files/URLs to analyze [default: .]
 
 Options:
       --interactive              Opens interactive file picker (? for help)
@@ -111,6 +126,9 @@ Options:
       --tokenizer <TYPE>         Tokenizer to use: tiktoken or huggingface
       --model <NAME>             Model name for HuggingFace tokenizer
       --tokenizer-file <PATH>    Path to local tokenizer file
+      --traverse-links           Traverse links when processing URLs
+      --link-depth <DEPTH>       Maximum depth to traverse links (default: 1)
+      --pdf <PATH>               Save output as PDF
   -h, --help                     Print help
   -V, --version                  Print version
 ```
@@ -131,6 +149,10 @@ default_output_format = "both"
 # Token counting settings
 default_tokenizer = "tiktoken"       # Can be "tiktoken" or "huggingface"
 default_tokenizer_model = "gpt2"     # Default model for HuggingFace tokenizer
+
+# URL processing settings
+traverse_links = false               # Whether to traverse links by default
+default_link_depth = 1               # Default depth for link traversal
 
 # Default exclude patterns
 default_excludes = [
@@ -176,3 +198,33 @@ Total tokens: 2456
 ## License
 
 MIT
+
+## Features in Detail
+
+### Git Repository Support
+Glimpse can directly process Git repositories from popular hosting services:
+- GitHub repositories
+- GitLab repositories
+- Bitbucket repositories
+- Azure DevOps repositories
+- Any Git repository URL (ending with .git)
+
+The repository is cloned to a temporary directory, processed, and automatically cleaned up.
+
+### Web Content Processing
+Glimpse can process web pages and convert them to Markdown:
+- Preserves heading structure
+- Converts links (both relative and absolute)
+- Handles code blocks and quotes
+- Supports nested lists
+- Processes images and tables
+
+With link traversal enabled, Glimpse can also process linked pages up to a specified depth, making it perfect for documentation sites and wikis.
+
+### PDF Output
+Any processed content (local files, Git repositories, or web pages) can be saved as a PDF with:
+- Preserved formatting
+- Syntax highlighting
+- Table of contents
+- Page numbers
+- Custom headers and footers
