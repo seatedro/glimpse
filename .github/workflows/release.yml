@@ -45,17 +45,22 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: rust-src
 
       - name: Install OpenSSL (macOS)
-        if: runner.os == 'macOS'
+        if: matrix.target == 'x86_64-apple-darwin'
         run: |
           brew install openssl@3
-          echo 'export OPENSSL_DIR=$(brew --prefix openssl@3)' >> $GITHUB_ENV
-          
+          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
+        env:
+          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
+          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
         run: cargo build --verbose --release --target ${{ matrix.target }}
 
       - name: Package release assets
