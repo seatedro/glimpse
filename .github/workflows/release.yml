@@ -30,8 +30,6 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -40,49 +38,39 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
           components: rust-src
 
-      - name: Install OpenSSL (macOS)
-        if: matrix.target == 'x86_64-apple-darwin'
-        run: |
-          brew install openssl@3
-          echo "OPENSSL_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
-
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        env:
-          OPENSSL_DIR: ${{ env.OPENSSL_DIR }}
-          PKG_CONFIG_PATH: ${{ env.PKG_CONFIG_PATH }}
         run: cargo build --verbose --release --target ${{ matrix.target }}
 
       - name: Package release assets
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          
+
           # Define binary name with extension if windows
           BIN_NAME=glimpse
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             BIN_NAME=glimpse.exe
           fi
-          
+
           # Create archive name
           ARCHIVE_NAME=glimpse-${{ github.ref_name }}-${{ matrix.target }}
-          
+
           # Create dist directory with required files
           mkdir -p $ARCHIVE_NAME
           cp $BIN_NAME $ARCHIVE_NAME/
           cp ../../../readme.md $ARCHIVE_NAME/
           cp ../../../LICENSE $ARCHIVE_NAME/
-          
+
           # Create archive based on OS
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             7z a -tzip "${ARCHIVE_NAME}.zip" $ARCHIVE_NAME
@@ -108,17 +96,17 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/homebrew-glimpse
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          
+
       - name: Update formula
         run: |
           # Get tarball URL and SHA
           TARBALL_URL="https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.ref_name }}.tar.gz"
           SHA256=$(curl -L $TARBALL_URL | shasum -a 256 | cut -d ' ' -f 1)
-          
+
           # Update formula version and hash
           sed -i "s|url.*|url \"$TARBALL_URL\"|" Formula/glimpse.rb
           sed -i "s|sha256.*|sha256 \"$SHA256\"|" Formula/glimpse.rb
-          
+
       - name: Commit and push changes
         run: |
           git config user.name "GitHub Actions"
