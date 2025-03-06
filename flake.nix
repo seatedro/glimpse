@@ -7,8 +7,15 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, rust-overlay, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs {
@@ -31,14 +38,18 @@
             openssl
           ];
 
-          buildInputs = with pkgs; [
-            openssl
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.SystemConfiguration
-          ] ++ lib.optionals stdenv.isDarwin [
-            darwin.apple_sdk.frameworks.CoreFoundation
-            darwin.apple_sdk.frameworks.CoreServices
-          ];
+          buildInputs =
+            with pkgs;
+            [
+              openssl
+              cacert
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              darwin.apple_sdk.frameworks.SystemConfiguration
+              darwin.apple_sdk.frameworks.Security
+              darwin.apple_sdk.frameworks.CoreFoundation
+              darwin.apple_sdk.frameworks.CoreServices
+            ];
 
           checkFlags = [
             "--skip=tokenizer::tests::test_hf_counter"
@@ -48,22 +59,26 @@
             description = "A blazingly fast tool for peeking at codebases";
             homepage = "https://github.com/seatedro/glimpse";
             license = licenses.mit;
-            maintainers = ["seatedro"];
+            maintainers = [ "seatedro" ];
             platforms = platforms.all;
           };
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            rust-bin.stable.latest.default
-            pkg-config
-            openssl
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.SystemConfiguration
-          ] ++ lib.optionals stdenv.isDarwin [
-            darwin.apple_sdk.frameworks.CoreFoundation
-            darwin.apple_sdk.frameworks.CoreServices
-          ];
+          buildInputs =
+            with pkgs;
+            [
+              rust-bin.stable.latest.default
+              pkg-config
+              openssl
+              cacert
+            ]
+            ++ lib.optionals stdenv.isDarwin [
+              darwin.apple_sdk.frameworks.Security
+              darwin.apple_sdk.frameworks.SystemConfiguration
+              darwin.apple_sdk.frameworks.CoreFoundation
+              darwin.apple_sdk.frameworks.CoreServices
+            ];
 
           # Set OPENSSL_DIR for local development
           shellHook = ''
