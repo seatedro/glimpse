@@ -51,6 +51,9 @@
               darwin.apple_sdk.frameworks.CoreServices
             ];
 
+          preCheck = ''
+            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          '';
           checkFlags = [
             "--skip=tokenizer::tests::test_hf_counter"
           ];
