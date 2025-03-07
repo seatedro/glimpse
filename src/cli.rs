@@ -31,7 +31,7 @@ pub enum Exclude {
     version
 )]
 pub struct Cli {
-    /// Files, directories, or URLs to analyze
+    /// Files or directories to analyze (multiple allowed), or a single URL/git repository
     #[arg(value_parser = validate_input, default_value = ".")]
     pub paths: Vec<String>,
 
