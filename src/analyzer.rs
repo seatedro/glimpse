@@ -6,7 +6,7 @@ use crate::output::{
 use crate::source_detection;
 use crate::tokenizer::TokenCounter;
 use anyhow::Result;
-use ignore::WalkBuilder;
+use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
@@ -29,28 +29,35 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     );
     pb.set_message("Scanning files...");
 
-    let max_size = args.max_size.expect("max_size should be set from config");
-    let max_depth = args.max_depth.expect("max_depth should be set from config");
     let output_format = args
         .output
         .clone()
         .expect("output format should be set from config");
+    let entries = process_entries(&args)?;
+    pb.finish();
 
-    // Build the walker with ignore patterns
-    let mut builder = WalkBuilder::new(&args.paths[0]);
-    builder
-        .max_depth(Some(max_depth))
-        .hidden(!args.hidden)
-        .git_ignore(!args.no_ignore)
-        .ignore(!args.no_ignore);
-
-    if let Some(ref includes) = args.include {
-        for pattern in includes {
-            builder.add_custom_ignore_filename(pattern);
-        }
+    if let Some(pdf_path) = &args.pdf {
+        let pdf_data = generate_pdf(&entries, args.output.clone().unwrap_or(OutputFormat::Both))?;
+        fs::write(pdf_path, pdf_data)?;
+        println!("PDF output written to: {}", pdf_path.display());
+    } else {
+        // Handle output (print/copy/save)
+        let output = generate_output(&entries, output_format)?;
+        handle_output(output, args)?;
     }
 
-    // Collect all valid files
+    if !args.no_tokens {
+        let counter = create_token_counter(args)?;
+        display_token_counts(counter, &entries)?;
+    }
+
+    Ok(())
+}
+
+pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
+    let max_size = args.max_size.expect("max_size should be set from config");
+    let max_depth = args.max_depth.expect("max_depth should be set from config");
+
     let entries = if args.interactive {
         let mut picker = FilePicker::new(
             PathBuf::from(&args.paths[0]),
@@ -73,8 +80,8 @@ pub fn process_directory(args: &Cli) -> Result<()> {
             .collect::<Vec<FileEntry>>()
     } else {
         let mut all_entries = Vec::new();
-        for path in &args.paths {
-            let path = std::path::Path::new(path);
+        for path_str in &args.paths {
+            let path = std::path::Path::new(path_str);
             if path.is_dir() {
                 let mut builder = WalkBuilder::new(path);
                 builder
@@ -89,14 +96,67 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                     }
                 }
 
+                let mut override_builder = OverrideBuilder::new(path);
+                if let Some(ref excludes) = args.exclude {
+                    for exclude in excludes {
+                        match exclude {
+                            Exclude::Pattern(pattern) => {
+                                // Add a '!' prefix if it doesn't already have one
+                                // This makes it a negative pattern (exclude)
+                                let exclude_pattern = if !pattern.starts_with('!') {
+                                    format!("!{}", pattern)
+                                } else {
+                                    pattern.clone()
+                                };
+
+                                if let Err(e) = override_builder.add(&exclude_pattern) {
+                                    eprintln!(
+                                        "Warning: Invalid exclude pattern '{}': {}",
+                                        pattern, e
+                                    );
+                                }
+                            }
+                            Exclude::File(file_path) => {
+                                // For file excludes, handle differently if:
+                                if file_path.is_absolute() {
+                                    // For absolute paths, check if they exist
+                                    if file_path.exists() {
+                                        // If base_path is part of file_path, make it relative
+                                        if let Ok(relative_path) = file_path.strip_prefix(path) {
+                                            let pattern = format!("!{}", relative_path.display());
+                                            if let Err(e) = override_builder.add(&pattern) {
+                                                eprintln!("Warning: Could not add file exclude pattern for '{}': {}", file_path.display(), e);
+                                            }
+                                        } else {
+                                            // This doesn't affect current directory
+                                            eprintln!(
+                                                "Note: File exclude not under current path: {}",
+                                                file_path.display()
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // For relative paths like "src", use as-is with a ! prefix
+                                    let pattern = format!("!{}", file_path.display());
+                                    if let Err(e) = override_builder.add(&pattern) {
+                                        eprintln!(
+                                            "Warning: Could not add file exclude pattern '{}': {}",
+                                            pattern, e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let overrides = override_builder.build()?;
+                builder.overrides(overrides);
+
                 let dir_entries: Vec<FileEntry> = builder
                     .build()
                     .par_bridge()
                     .filter_map(|entry| entry.ok())
-                    .filter(|entry| {
-                        let should_exclude = is_excluded(entry, args);
-                        !should_exclude
-                    })
+                    // No longer need the is_excluded filter here, WalkBuilder handles it
                     .filter(|entry| {
                         entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
                             && source_detection::is_source_file(entry.path())
@@ -117,12 +177,44 @@ pub fn process_directory(args: &Cli) -> Result<()> {
                         .map(|m| m.len() <= max_size)
                         .unwrap_or(false)
                 {
-                    let entry = ignore::WalkBuilder::new(path)
-                        .build()
-                        .next()
-                        .and_then(|r| r.ok());
-                    if let Some(entry) = entry {
-                        if !is_excluded(&entry, args) {
+                    // Need to check excludes even for single files explicitly passed
+                    let mut excluded = false;
+                    if let Some(ref excludes) = args.exclude {
+                        let mut override_builder =
+                            OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
+                        for exclude in excludes {
+                            match exclude {
+                                Exclude::Pattern(pattern) => {
+                                    if let Err(e) = override_builder.add(pattern) {
+                                        eprintln!(
+                                            "Warning: Invalid exclude pattern '{}': {}",
+                                            pattern, e
+                                        );
+                                    }
+                                }
+                                Exclude::File(file_path) => {
+                                    if path == file_path {
+                                        excluded = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if excluded {
+                            continue;
+                        }
+                        let overrides = override_builder.build()?;
+                        if overrides.matched(path, false).is_ignore() {
+                            excluded = true;
+                        }
+                    }
+
+                    if !excluded {
+                        let entry = ignore::WalkBuilder::new(path)
+                            .build()
+                            .next()
+                            .and_then(|r| r.ok());
+                        if let Some(entry) = entry {
                             if let Ok(file_entry) = process_file(&entry, path) {
                                 all_entries.push(file_entry);
                             }
@@ -133,66 +225,11 @@ pub fn process_directory(args: &Cli) -> Result<()> {
         }
         all_entries
     };
-    pb.finish();
 
-    if let Some(pdf_path) = &args.pdf {
-        let pdf_data = generate_pdf(&entries, args.output.clone().unwrap_or(OutputFormat::Both))?;
-        fs::write(pdf_path, pdf_data)?;
-        println!("PDF output written to: {}", pdf_path.display());
-    } else {
-        // Handle output (print/copy/save)
-        let output = generate_output(&entries, output_format)?;
-        handle_output(output, args)?;
-    }
-
-    if !args.no_tokens {
-        let counter = create_token_counter(args)?;
-        display_token_counts(counter, &entries)?;
-    }
-
-    Ok(())
+    Ok(entries)
 }
 
-fn is_excluded(entry: &ignore::DirEntry, args: &Cli) -> bool {
-    if let Some(excludes) = &args.exclude {
-        let path_str = entry.path().to_string_lossy();
-
-        for exclude in excludes {
-            match exclude {
-                Exclude::Pattern(pattern) => {
-                    let pattern = if !pattern.starts_with("./") && !pattern.starts_with("/") {
-                        format!("./{}", pattern)
-                    } else {
-                        pattern.clone()
-                    };
-
-                    if let Ok(glob) = globset::GlobBuilder::new(&pattern)
-                        .case_insensitive(false)
-                        .build()
-                    {
-                        let matcher = glob.compile_matcher();
-                        let check_path = if !path_str.starts_with("./") {
-                            format!("./{}", path_str)
-                        } else {
-                            path_str.to_string()
-                        };
-
-                        if matcher.is_match(&check_path) {
-                            return true;
-                        }
-                    }
-                }
-                Exclude::File(path) => {
-                    let matches = entry.path().ends_with(path);
-                    if matches {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
+// Removed the is_excluded function as it's now handled by WalkBuilder overrides
 
 pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
     match args.tokenizer.as_ref().unwrap_or(&TokenizerType::Tiktoken) {
@@ -296,35 +333,61 @@ mod tests {
     }
 
     #[test]
-    fn test_exclude_patterns() {
-        let (dir, _files) = setup_test_directory().unwrap();
-        let entry = ignore::WalkBuilder::new(dir.path())
-            .build()
-            .find(|e| e.as_ref().unwrap().path().ends_with("main.rs"))
-            .unwrap()
-            .unwrap();
+    fn test_exclude_patterns() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
 
-        // Test various exclude patterns
+        let main_rs_path = dir.path().join("src/main.rs");
+
         let test_cases = vec![
             // Pattern exclusions
             (Exclude::Pattern("**/*.rs".to_string()), true),
             (Exclude::Pattern("**/*.js".to_string()), false),
             (Exclude::Pattern("test/**".to_string()), false),
             // File exclusions
-            (Exclude::File(PathBuf::from("main.rs")), true),
+            (Exclude::File(main_rs_path.clone()), true),
             (Exclude::File(PathBuf::from("nonexistent.rs")), false),
         ];
 
         for (exclude, should_exclude) in test_cases {
-            let mut cli = create_test_cli(dir.path());
-            cli.exclude = Some(vec![exclude]);
+            let mut override_builder = OverrideBuilder::new(dir.path());
+
+            match &exclude {
+                Exclude::Pattern(pattern) => {
+                    // For patterns that should exclude, we need to add a "!" prefix
+                    // to make them negative patterns (exclusions)
+                    let exclude_pattern = if !pattern.starts_with('!') {
+                        format!("!{}", pattern)
+                    } else {
+                        pattern.clone()
+                    };
+                    override_builder.add(&exclude_pattern).unwrap();
+                }
+                Exclude::File(file_path) => {
+                    if file_path.exists() {
+                        // Get the file path relative to the test directory
+                        let rel_path = if file_path.is_absolute() {
+                            file_path.strip_prefix(dir.path()).unwrap_or(file_path)
+                        } else {
+                            file_path
+                        };
+                        // Add as a negative pattern
+                        let pattern = format!("!{}", rel_path.display());
+                        override_builder.add(&pattern).unwrap();
+                    }
+                }
+            }
+
+            let overrides = override_builder.build()?;
+            let is_ignored = overrides.matched(&main_rs_path, false).is_ignore();
+
             assert_eq!(
-                is_excluded(&entry, &cli),
-                should_exclude,
-                "Failed for exclude pattern: {:?}",
-                cli.exclude
+                is_ignored, should_exclude,
+                "Failed for exclude: {:?}",
+                exclude
             );
         }
+
+        Ok(())
     }
 
     #[test]
