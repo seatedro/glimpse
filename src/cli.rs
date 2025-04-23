@@ -32,7 +32,7 @@ pub enum Exclude {
 )]
 pub struct Cli {
     /// Files or directories to analyze (multiple allowed), or a single URL/git repository
-    #[arg(value_parser = validate_input, default_value = ".")]
+    #[arg(default_value = ".")]
     pub paths: Vec<String>,
 
     /// Print the config file path and exit
@@ -158,20 +158,26 @@ impl Cli {
         new_cli.paths = vec![path.to_string()];
         new_cli
     }
+
+    pub fn validate_args(&self, is_url: bool) -> anyhow::Result<()> {
+        if is_url {
+            return Ok(());
+        }
+        if self.paths.is_empty() {
+            return Err(anyhow::anyhow!("No paths provided"));
+        }
+        for input in &self.paths {
+            if !input.starts_with("http://") && !input.starts_with("https://") {
+                let path = PathBuf::from(input);
+                if !path.exists() {
+                    return Err(anyhow::anyhow!("Path '{}' does not exist", input));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
-fn validate_input(input: &str) -> Result<String, String> {
-    if input.starts_with("http://") || input.starts_with("https://") {
-        return Ok(input.to_string());
-    }
-
-    let path = PathBuf::from(input);
-    if path.exists() {
-        Ok(input.to_string())
-    } else {
-        Err(format!("Path '{}' does not exist", input))
-    }
-}
 
 fn parse_exclude(value: &str) -> Result<Exclude, String> {
     let path = PathBuf::from(value);

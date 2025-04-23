@@ -33,6 +33,7 @@ fn main() -> anyhow::Result<()> {
                 || path.starts_with("http://")
                 || path.starts_with("https://")
         })
+        .take(1)
         .collect();
 
     if url_paths.len() > 1 {
@@ -45,8 +46,37 @@ fn main() -> anyhow::Result<()> {
         if GitProcessor::is_git_url(url_path) {
             let git_processor = GitProcessor::new()?;
             let repo_path = git_processor.process_repo(url_path)?;
-            process_directory(&args.with_path(repo_path.to_str().unwrap()))?;
+            args.validate_args(true)?;
+
+            let mut subpaths: Vec<String> = vec![];
+            let mut found_url = false;
+            for p in &args.paths {
+                if !found_url && p.as_str() == url_path.as_str() {
+                    found_url = true;
+                    continue;
+                }
+                if found_url {
+                    subpaths.push(p.clone());
+                }
+            }
+
+            let process_args = if subpaths.is_empty() {
+                // No subpaths specified, process the whole repo
+                args.with_path(repo_path.to_str().unwrap())
+            } else {
+                // Process only the specified subpaths inside the repo
+                let mut new_args = args.clone();
+                new_args.paths = subpaths.iter().map(|sub| {
+                    // Join with repo_path
+                    let mut joined = std::path::PathBuf::from(&repo_path);
+                    joined.push(sub);
+                    joined.to_string_lossy().to_string()
+                }).collect();
+                new_args
+            };
+            process_directory(&process_args)?;
         } else if url_path.starts_with("http://") || url_path.starts_with("https://") {
+            args.validate_args(true)?;
             let link_depth = args.link_depth.unwrap_or(config.default_link_depth);
             let traverse = args.traverse_links || config.traverse_links;
 
@@ -60,6 +90,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     } else {
+        args.validate_args(false)?;
         process_directory(&args)?;
     }
 
