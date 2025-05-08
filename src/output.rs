@@ -69,17 +69,17 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
 
 fn format_num_with_sep(number: &usize) -> String {
     let digits = number.to_string();
-    let length = digits.len();
-    let mut out = String::with_capacity(length + length / 3);
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
 
-    for (i, digit) in digits.chars().rev().enumerate() {
-        if i != 0 && i % 3 == 0 {
+    for (i, digit) in digits.chars().enumerate() {
+        if i != 0 && (len - i) % 3 == 0 {
             out.push(',');
         }
         out.push(digit);
     }
 
-    out.chars().rev().collect()
+    out
 }
 
 fn generate_tree(entries: &[FileEntry]) -> Result<String> {
