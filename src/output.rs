@@ -49,7 +49,10 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
     let token_count = token_counter.count_files(entries)?;
 
     println!("\nToken Count Summary:");
-    println!("Total tokens: {}", token_count.total_tokens);
+    println!(
+        "Total tokens: {}",
+        format_num_with_sep(&token_count.total_tokens)
+    );
     println!("\nBreakdown by file:");
 
     // Sorting breakdown
@@ -58,10 +61,25 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
     let top_files = breakdown.iter().take(15);
 
     for (path, count) in top_files {
-        println!("  {}: {}", path.display(), count);
+        println!("  {}: {}", path.display(), format_num_with_sep(count));
     }
 
     Ok(())
+}
+
+fn format_num_with_sep(number: &usize) -> String {
+    let digits = number.to_string();
+    let length = digits.len();
+    let mut out = String::with_capacity(length + length / 3);
+
+    for (i, digit) in digits.chars().rev().enumerate() {
+        if i != 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+
+    out.chars().rev().collect()
 }
 
 fn generate_tree(entries: &[FileEntry]) -> Result<String> {
