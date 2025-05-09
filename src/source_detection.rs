@@ -8,7 +8,7 @@ include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 fn extract_interpreter(data: &str) -> Option<String> {
     let lines: Vec<&str> = data.lines().take(2).collect();
 
-    if !lines.get(0).map_or(false, |l| l.starts_with("#!")) {
+    if !lines.first().is_some_and(|l| l.starts_with("#!")) {
         return None;
     }
 

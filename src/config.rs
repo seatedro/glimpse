@@ -36,7 +36,8 @@ impl<'de> Deserialize<'de> for BackwardsCompatOutputFormat {
                 let format = match s.to_lowercase().as_str() {
                     "tree" => OutputFormat::Tree,
                     "files" => OutputFormat::Files,
-                    "both" | _ => OutputFormat::Both, // Default to Both for unknown values
+                    "both" => OutputFormat::Both,
+                    _ => OutputFormat::Both, // Default to Both for unknown values
                 };
                 Ok(BackwardsCompatOutputFormat(format))
             }

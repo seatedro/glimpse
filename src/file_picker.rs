@@ -208,7 +208,7 @@ impl FilePicker {
             if !self.show_hidden
                 && path
                     .file_name()
-                    .map_or(false, |n| n.to_string_lossy().starts_with('.'))
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
             {
                 continue;
             }

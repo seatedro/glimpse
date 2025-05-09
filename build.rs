@@ -38,7 +38,7 @@ fn main() {
     code.push_str("pub static SOURCE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
-    for (_, lang) in &languages {
+    for lang in languages.values() {
         for ext in &lang.extensions {
             let ext = ext.trim_start_matches('.');
             code.push_str(&format!("    set.insert(\"{}\");\n", ext));
@@ -52,7 +52,7 @@ fn main() {
     code.push_str("pub static KNOWN_FILENAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
-    for (_, lang) in &languages {
+    for lang in languages.values() {
         for filename in &lang.filenames {
             code.push_str(&format!("    set.insert(\"{}\");\n", filename));
         }
@@ -65,7 +65,7 @@ fn main() {
     code.push_str("pub static INTERPRETER_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
-    for (_, lang) in &languages {
+    for lang in languages.values() {
         for interpreter in &lang.interpreters {
             code.push_str(&format!("    set.insert(\"{}\");\n", interpreter));
         }
