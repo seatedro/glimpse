@@ -178,7 +178,6 @@ impl Cli {
     }
 }
 
-
 fn parse_exclude(value: &str) -> Result<Exclude, String> {
     let path = PathBuf::from(value);
     if path.exists() {

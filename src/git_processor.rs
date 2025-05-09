@@ -19,7 +19,7 @@ impl GitProcessor {
         let parsed_url = Url::parse(url)?;
         let repo_name = parsed_url
             .path_segments()
-            .and_then(|segments| segments.last())
+            .and_then(|mut segments| segments.next_back())
             .map(|name| name.trim_end_matches(".git"))
             .unwrap_or("repo")
             .to_string();

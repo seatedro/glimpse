@@ -201,7 +201,6 @@ pub fn generate_pdf(entries: &[FileEntry], format: OutputFormat) -> Result<Vec<u
             // New page for files
             let (next_page, next_layer) = doc.add_page(Mm(210.0), Mm(297.0), "New Layer");
             current_layer = doc.get_page(next_page).get_layer(next_layer);
-            y_position = 280.0;
         }
         _ => {}
     }
@@ -212,7 +211,7 @@ pub fn generate_pdf(entries: &[FileEntry], format: OutputFormat) -> Result<Vec<u
 
         // Add file path as header
         current_layer.use_text(
-            &format!("File: {}", entry.path.display()),
+            format!("File: {}", entry.path.display()),
             14.0,
             Mm(10.0),
             Mm(y_position),
@@ -221,7 +220,7 @@ pub fn generate_pdf(entries: &[FileEntry], format: OutputFormat) -> Result<Vec<u
         y_position -= 10.0;
 
         // Add separator line
-        current_layer.use_text(&"=".repeat(48), 12.0, Mm(10.0), Mm(y_position), &font);
+        current_layer.use_text("=".repeat(48), 12.0, Mm(10.0), Mm(y_position), &font);
         y_position -= 10.0;
 
         // Add file content in smaller font

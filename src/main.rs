@@ -66,12 +66,15 @@ fn main() -> anyhow::Result<()> {
             } else {
                 // Process only the specified subpaths inside the repo
                 let mut new_args = args.clone();
-                new_args.paths = subpaths.iter().map(|sub| {
-                    // Join with repo_path
-                    let mut joined = std::path::PathBuf::from(&repo_path);
-                    joined.push(sub);
-                    joined.to_string_lossy().to_string()
-                }).collect();
+                new_args.paths = subpaths
+                    .iter()
+                    .map(|sub| {
+                        // Join with repo_path
+                        let mut joined = std::path::PathBuf::from(&repo_path);
+                        joined.push(sub);
+                        joined.to_string_lossy().to_string()
+                    })
+                    .collect();
                 new_args
             };
             process_directory(&process_args)?;

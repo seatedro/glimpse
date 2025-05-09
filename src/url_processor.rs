@@ -97,9 +97,9 @@ impl UrlProcessor {
                         if let Some(child_ref) = ElementRef::wrap(node) {
                             self.process_node(child_ref, base_url, output, depth + 1);
                         }
-                        output.push_str("\n");
+                        output.push('\n');
                     }
-                    "br" => output.push_str("\n"),
+                    "br" => output.push('\n'),
                     "h1" => {
                         if let Some(el) = ElementRef::wrap(node) {
                             self.process_heading(el, base_url, output, "#")
@@ -136,7 +136,7 @@ impl UrlProcessor {
                         }
                     }
                     "li" => {
-                        output.push_str("\n");
+                        output.push('\n');
                         output.push_str(&"  ".repeat(depth));
                         output.push_str("- ");
                         if let Some(child_ref) = ElementRef::wrap(node) {
@@ -198,7 +198,7 @@ impl UrlProcessor {
         output.push_str(level);
         output.push(' ');
         self.process_node(element, base_url, output, 0);
-        output.push_str("\n");
+        output.push('\n');
     }
 
     fn process_list(&self, element: ElementRef, base_url: &Url, output: &mut String, depth: usize) {

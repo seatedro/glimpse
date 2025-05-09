@@ -33,7 +33,7 @@ pub fn process_directory(args: &Cli) -> Result<()> {
         .output
         .clone()
         .expect("output format should be set from config");
-    let entries = process_entries(&args)?;
+    let entries = process_entries(args)?;
     pb.finish();
 
     if let Some(pdf_path) = &args.pdf {
