@@ -113,3 +113,13 @@ jobs:
           git add Formula/glimpse.rb
           git commit -m "chore: update to ${{ github.ref_name }}"
           git push
+
+  publish-crate:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
