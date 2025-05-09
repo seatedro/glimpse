@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 use base64::Engine;
+use num_format::{Buffer, SystemLocale};
 use printpdf::*;
 use std::{fs, io::BufWriter, path::PathBuf};
 
@@ -48,11 +49,12 @@ pub fn generate_output(entries: &[FileEntry], format: OutputFormat) -> Result<St
 pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) -> Result<()> {
     let token_count = token_counter.count_files(entries)?;
 
+    let mut buf = Buffer::default();
+    let locale = SystemLocale::default().or_else(|_| SystemLocale::from_name("C"))?;
+    buf.write_formatted(&token_count.total_tokens, &locale);
+
     println!("\nToken Count Summary:");
-    println!(
-        "Total tokens: {}",
-        format_num_with_sep(&token_count.total_tokens)
-    );
+    println!("Total tokens: {}", buf.as_str());
     println!("\nBreakdown by file:");
 
     // Sorting breakdown
@@ -61,25 +63,11 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
     let top_files = breakdown.iter().take(15);
 
     for (path, count) in top_files {
-        println!("  {}: {}", path.display(), format_num_with_sep(count));
+        buf.write_formatted(count, &locale);
+        println!("  {}: {}", path.display(), buf.as_str());
     }
 
     Ok(())
-}
-
-fn format_num_with_sep(number: &usize) -> String {
-    let digits = number.to_string();
-    let len = digits.len();
-    let mut out = String::with_capacity(len + len / 3);
-
-    for (i, digit) in digits.chars().enumerate() {
-        if i != 0 && (len - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-
-    out
 }
 
 fn generate_tree(entries: &[FileEntry]) -> Result<String> {

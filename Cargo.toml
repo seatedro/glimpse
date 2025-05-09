@@ -32,6 +32,7 @@ scraper = "0.18"
 url = "2.5"
 git2 = "0.18"
 mockito = "1.4"
+num-format = { version = "0.4.4", features = ["with-system-locale"] }
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }
