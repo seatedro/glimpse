@@ -4,7 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 use base64::Engine;
-use num_format::{Buffer, SystemLocale};
+use num_format::{Buffer, Locale};
 use printpdf::*;
 use std::{fs, io::BufWriter, path::PathBuf};
 
@@ -50,7 +50,7 @@ pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) 
     let token_count = token_counter.count_files(entries)?;
 
     let mut buf = Buffer::default();
-    let locale = SystemLocale::default().or_else(|_| SystemLocale::from_name("C"))?;
+    let locale = Locale::en;
     buf.write_formatted(&token_count.total_tokens, &locale);
 
     println!("\nToken Count Summary:");
