@@ -33,7 +33,7 @@ fn extract_interpreter(data: &str) -> Option<String> {
         return None;
     }
 
-    let mut script = first_part.split('/').last()?.to_string();
+    let mut script = first_part.split('/').next_back()?.to_string();
 
     // Handle /usr/bin/env
     if script == "env" {
