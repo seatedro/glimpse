@@ -324,6 +324,7 @@ mod tests {
 
         let content = "Test content".to_string();
         let args = Cli {
+            config: false,
             paths: vec![".".to_string()],
             include: None,
             exclude: None,
