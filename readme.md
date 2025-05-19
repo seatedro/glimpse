@@ -12,6 +12,7 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 - 📋 Clipboard support
 - 🎨 Customizable file type detection
 - 🥷 Respects .gitignore automatically
+- 📁 Local per-repo configuration with `.glimpse` file
 - 🔗 Web content processing with Markdown conversion
 - 📦 Git repository support
 - 🌐 URL traversal with configurable depth
@@ -69,6 +70,8 @@ glimpse https://example.com/docs
 glimpse https://example.com/docs --traverse-links --link-depth 2
 ```
 
+On first use in a repository, Glimpse will save a `.glimpse` configuration file locally with your specified options. This file can be referenced on subsequent runs, or overridden by passing options again.
+
 Common options:
 ```bash
 # Show hidden files
@@ -77,16 +80,19 @@ glimpse -H /path/to/project
 # Only show tree structure
 glimpse -o tree /path/to/project
 
-# Copy output to clipboard
-glimpse -c /path/to/project
+# Save output to GLIMPSE.md (default if no path given)
+glimpse -f /path/to/project
 
-# Save output to file
+# Save output to a specific file
 glimpse -f output.txt /path/to/project
+
+# Print output to stdout instead of copying to clipboard
+glimpse -p /path/to/project
 
 # Include specific file types
 glimpse -i "*.rs,*.go" /path/to/project
 
-# Exclude patterns
+# Exclude patterns or files
 glimpse -e "target/*,dist/*" /path/to/project
 
 # Count tokens using tiktoken (OpenAI's tokenizer)
@@ -100,6 +106,15 @@ glimpse --tokenizer huggingface --tokenizer-file /path/to/tokenizer.json /path/t
 
 # Process a Git repository and save as PDF
 glimpse https://github.com/username/repo.git --pdf output.pdf
+
+# Open interactive file picker
+glimpse --interactive /path/to/project
+
+# Print the config file path and exit
+glimpse --config_path
+
+# Initialize a .glimpse config file in the current directory
+glimpse --config
 ```
 
 ## CLI Options
@@ -108,29 +123,31 @@ glimpse https://github.com/username/repo.git --pdf output.pdf
 Usage: glimpse [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  Directory/Files/URLs to analyze [default: .]
+  [PATH]  Files, directories, or URLs to analyze [default: .]
 
 Options:
-      --interactive              Opens interactive file picker (? for help)
-  -i, --include <PATTERNS>       Additional patterns to include (e.g. "*.rs,*.go")
-  -e, --exclude <PATTERNS>       Additional patterns to exclude
-  -s, --max-size <BYTES>         Maximum file size in bytes
-      --max-depth <DEPTH>        Maximum directory depth to traverse
-  -o, --output <FORMAT>          Output format: tree, files, or both
-  -f, --file <PATH>              Save output to specified file
-  -p, --print                    Print to stdout instead of clipboard
-  -t, --threads <COUNT>          Number of threads for parallel processing
-  -H, --hidden                   Show hidden files and directories
-      --no-ignore                Don't respect .gitignore files
-      --no-tokens                Disable token counting
-      --tokenizer <TYPE>         Tokenizer to use: tiktoken or huggingface
-      --model <NAME>             Model name for HuggingFace tokenizer
-      --tokenizer-file <PATH>    Path to local tokenizer file
-      --traverse-links           Traverse links when processing URLs
-      --link-depth <DEPTH>       Maximum depth to traverse links (default: 1)
-      --pdf <PATH>               Save output as PDF
-  -h, --help                     Print help
-  -V, --version                  Print version
+      --config_path                Print the config file path and exit
+      --config                     Init glimpse config file in current directory
+      --interactive                Opens interactive file picker (? for help)
+  -i, --include <PATTERNS>         Additional patterns to include (e.g. "*.rs,*.go")
+  -e, --exclude <PATTERNS|PATHS>   Additional patterns or files to exclude
+  -s, --max-size <BYTES>           Maximum file size in bytes
+      --max-depth <DEPTH>          Maximum directory depth to traverse
+  -o, --output <FORMAT>            Output format: tree, files, or both
+  -f, --file [<PATH>]              Save output to specified file (default: GLIMPSE.md)
+  -p, --print                      Print to stdout instead of copying to clipboard
+  -t, --threads <COUNT>            Number of threads for parallel processing
+  -H, --hidden                     Show hidden files and directories
+      --no-ignore                  Don't respect .gitignore files
+      --no-tokens                  Disable token counting
+      --tokenizer <TYPE>           Tokenizer to use: tiktoken or huggingface
+      --model <NAME>               Model name for HuggingFace tokenizer
+      --tokenizer-file <PATH>      Path to local tokenizer file
+      --traverse-links             Traverse links when processing URLs
+      --link-depth <DEPTH>         Maximum depth to traverse links (default: 1)
+      --pdf <PATH>                 Save output as PDF
+  -h, --help                       Print help
+  -V, --version                    Print version
 ```
 
 ## Configuration

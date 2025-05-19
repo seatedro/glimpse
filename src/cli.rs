@@ -60,8 +60,12 @@ pub struct Cli {
     pub output: Option<OutputFormat>,
 
     /// Output file path (optional)
-    #[arg(short = 'f', long)]
+    #[arg(short = 'f', long, num_args = 0..=1, default_missing_value = "GLIMPSE.md")]
     pub file: Option<PathBuf>,
+
+    /// Init glimpse config file
+    #[arg(long, default_value_t = false)]
+    pub config: bool,
 
     /// Print to stdout instead
     #[arg(short, long)]

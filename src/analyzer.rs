@@ -309,6 +309,7 @@ mod tests {
 
     fn create_test_cli(dir_path: &Path) -> Cli {
         Cli {
+            config: false,
             paths: vec![dir_path.to_string_lossy().to_string()],
             config_path: false,
             include: None,

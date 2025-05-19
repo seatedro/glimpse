@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -173,4 +173,47 @@ pub fn get_config_path() -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
         .join("glimpse");
     Ok(config_dir.join("config.toml"))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RepoConfig {
+    pub include: Option<Vec<String>>,
+    pub exclude: Option<Vec<Exclude>>,
+    pub max_size: Option<u64>,
+    pub max_depth: Option<usize>,
+    pub output: Option<BackwardsCompatOutputFormat>,
+    pub file: Option<PathBuf>,
+    pub hidden: Option<bool>,
+    pub no_ignore: Option<bool>,
+}
+
+impl Default for RepoConfig {
+    fn default() -> Self {
+        Self {
+            include: None,
+            exclude: None,
+            max_size: None,
+            max_depth: None,
+            output: None,
+            file: None,
+            hidden: None,
+            no_ignore: None,
+        }
+    }
+}
+
+pub fn save_repo_config(path: &Path, repo_config: &RepoConfig) -> anyhow::Result<()> {
+    let config_str = toml::to_string_pretty(repo_config)?;
+    std::fs::write(path, config_str)?;
+    Ok(())
+}
+
+pub fn load_repo_config(path: &Path) -> anyhow::Result<RepoConfig> {
+    if path.exists() {
+        let config_str = std::fs::read_to_string(path)?;
+        let config: RepoConfig = toml::from_str(&config_str)?;
+        Ok(config)
+    } else {
+        Ok(RepoConfig::default())
+    }
 }
