@@ -175,7 +175,7 @@ pub fn get_config_path() -> anyhow::Result<PathBuf> {
     Ok(config_dir.join("config.toml"))
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RepoConfig {
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<Exclude>>,
@@ -185,21 +185,6 @@ pub struct RepoConfig {
     pub file: Option<PathBuf>,
     pub hidden: Option<bool>,
     pub no_ignore: Option<bool>,
-}
-
-impl Default for RepoConfig {
-    fn default() -> Self {
-        Self {
-            include: None,
-            exclude: None,
-            max_size: None,
-            max_depth: None,
-            output: None,
-            file: None,
-            hidden: None,
-            no_ignore: None,
-        }
-    }
 }
 
 pub fn save_repo_config(path: &Path, repo_config: &RepoConfig) -> anyhow::Result<()> {

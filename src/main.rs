@@ -181,13 +181,10 @@ fn create_repo_config_from_args(args: &Cli) -> RepoConfig {
 
     RepoConfig {
         include: args.include.clone(),
-        exclude: args.exclude.clone().map(|v| v.clone()),
+        exclude: args.exclude.clone(),
         max_size: args.max_size,
         max_depth: args.max_depth,
-        output: args
-            .output
-            .clone()
-            .map(|o| BackwardsCompatOutputFormat::from(o)),
+        output: args.output.clone().map(BackwardsCompatOutputFormat::from),
         file: args.file.clone(),
         hidden: Some(args.hidden),
         no_ignore: Some(args.no_ignore),
