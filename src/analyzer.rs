@@ -90,13 +90,22 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                     .git_ignore(!args.no_ignore)
                     .ignore(!args.no_ignore);
 
+                                let mut override_builder = OverrideBuilder::new(path);
+
+                // Handle include patterns first (positive patterns)
                 if let Some(ref includes) = args.include {
                     for pattern in includes {
-                        builder.add_custom_ignore_filename(pattern);
+                        // Include patterns are positive patterns (no ! prefix)
+                        if let Err(e) = override_builder.add(pattern) {
+                            eprintln!(
+                                "Warning: Invalid include pattern '{}': {}",
+                                pattern, e
+                            );
+                        }
                     }
                 }
 
-                let mut override_builder = OverrideBuilder::new(path);
+                // Handle exclude patterns (negative patterns)
                 if let Some(ref excludes) = args.exclude {
                     for exclude in excludes {
                         match exclude {
@@ -177,15 +186,37 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                         .map(|m| m.len() <= max_size)
                         .unwrap_or(false)
                 {
-                    // Need to check excludes even for single files explicitly passed
+                    // Need to check includes and excludes even for single files explicitly passed
                     let mut excluded = false;
+                    let mut override_builder =
+                        OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
+
+                    // Handle include patterns first (positive patterns)
+                    if let Some(ref includes) = args.include {
+                        for pattern in includes {
+                            // Include patterns are positive patterns (no ! prefix)
+                            if let Err(e) = override_builder.add(pattern) {
+                                eprintln!(
+                                    "Warning: Invalid include pattern '{}': {}",
+                                    pattern, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Handle exclude patterns (negative patterns)
                     if let Some(ref excludes) = args.exclude {
-                        let mut override_builder =
-                            OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
                         for exclude in excludes {
                             match exclude {
                                 Exclude::Pattern(pattern) => {
-                                    if let Err(e) = override_builder.add(pattern) {
+                                    // Add a '!' prefix if it doesn't already have one
+                                    // This makes it a negative pattern (exclude)
+                                    let exclude_pattern = if !pattern.starts_with('!') {
+                                        format!("!{}", pattern)
+                                    } else {
+                                        pattern.clone()
+                                    };
+                                    if let Err(e) = override_builder.add(&exclude_pattern) {
                                         eprintln!(
                                             "Warning: Invalid exclude pattern '{}': {}",
                                             pattern, e
@@ -203,10 +234,19 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                         if excluded {
                             continue;
                         }
-                        let overrides = override_builder.build()?;
-                        if overrides.matched(path, false).is_ignore() {
-                            excluded = true;
-                        }
+                    }
+
+                    let overrides = override_builder.build()?;
+                    let match_result = overrides.matched(path, false);
+
+                    // If there are include patterns, the file must match at least one include pattern
+                    // and not be excluded by any exclude pattern
+                    if args.include.is_some() {
+                        // With include patterns: file must be whitelisted (matched by include) and not ignored (excluded)
+                        excluded = !match_result.is_whitelist() || match_result.is_ignore();
+                    } else {
+                        // Without include patterns: file is excluded only if it matches an exclude pattern
+                        excluded = match_result.is_ignore();
                     }
 
                     if !excluded {
@@ -398,9 +438,16 @@ mod tests {
 
         // Test excluding all Rust files
         cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
-        let _ = process_directory(&cli)?;
+        let entries = process_entries(&cli)?;
+
         // Verify no .rs files were processed
-        // This would need to be adapted based on how you want to verify the results
+        for entry in &entries {
+            assert!(
+                entry.path.extension().and_then(|ext| ext.to_str()) != Some("rs"),
+                "Found .rs file that should have been excluded: {:?}",
+                entry.path
+            );
+        }
 
         // Test excluding specific directories
         cli.exclude = Some(vec![
@@ -408,8 +455,19 @@ mod tests {
             Exclude::Pattern("**/target/**".to_string()),
             Exclude::Pattern("**/.git/**".to_string()),
         ]);
-        let _ = process_directory(&cli)?;
+        let entries = process_entries(&cli)?;
+
         // Verify excluded directories were not processed
+        for entry in &entries {
+            let path_str = entry.path.to_string_lossy();
+            assert!(
+                !path_str.contains("node_modules") &&
+                !path_str.contains("target") &&
+                !path_str.contains(".git"),
+                "Found file from excluded directory: {:?}",
+                entry.path
+            );
+        }
 
         Ok(())
     }
@@ -421,13 +479,93 @@ mod tests {
 
         // Test including only Rust files
         cli.include = Some(vec!["**/*.rs".to_string()]);
-        let _ = process_directory(&cli)?;
+        let entries = process_entries(&cli)?;
+
         // Verify only .rs files were processed
+        assert!(!entries.is_empty(), "Should have found some .rs files");
+        for entry in &entries {
+            assert!(
+                entry.path.extension().and_then(|ext| ext.to_str()) == Some("rs"),
+                "Found non-.rs file: {:?}",
+                entry.path
+            );
+        }
+
+        // Should find 4 .rs files: main.rs, lib.rs, test.rs, code.rs
+        assert_eq!(entries.len(), 4, "Should find exactly 4 .rs files");
 
         // Test including multiple patterns
         cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
-        let _ = process_directory(&cli)?;
+        let entries = process_entries(&cli)?;
+
         // Verify only .rs and .py files were processed
+        assert!(!entries.is_empty(), "Should have found some .rs and .py files");
+        for entry in &entries {
+            let ext = entry.path.extension().and_then(|ext| ext.to_str());
+            assert!(
+                ext == Some("rs") || ext == Some("py"),
+                "Found file with unexpected extension: {:?}",
+                entry.path
+            );
+        }
+
+        // Should find 4 .rs files + 1 .py file = 5 total
+        assert_eq!(entries.len(), 5, "Should find exactly 5 .rs and .py files");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_directory_with_includes_and_excludes() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test including only Rust files but excluding specific ones
+        cli.include = Some(vec!["**/*.rs".to_string()]);
+        cli.exclude = Some(vec![Exclude::Pattern("**/test.rs".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        // Verify only .rs files were processed, but test.rs was excluded
+        assert!(!entries.is_empty(), "Should have found some .rs files");
+        for entry in &entries {
+            assert!(
+                entry.path.extension().and_then(|ext| ext.to_str()) == Some("rs"),
+                "Found non-.rs file: {:?}",
+                entry.path
+            );
+            assert!(
+                !entry.path.to_string_lossy().contains("test.rs"),
+                "Found excluded test.rs file: {:?}",
+                entry.path
+            );
+        }
+
+        // Should find 3 .rs files (main.rs, lib.rs, code.rs) but not test.rs
+        assert_eq!(entries.len(), 3, "Should find exactly 3 .rs files (excluding test.rs)");
+
+        // Test including multiple file types but excluding a directory
+        cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
+        cli.exclude = Some(vec![Exclude::Pattern("**/nested/**".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        // Verify only .rs and .py files were processed, but nested directory was excluded
+        assert!(!entries.is_empty(), "Should have found some .rs and .py files");
+        for entry in &entries {
+            let ext = entry.path.extension().and_then(|ext| ext.to_str());
+            assert!(
+                ext == Some("rs") || ext == Some("py"),
+                "Found file with unexpected extension: {:?}",
+                entry.path
+            );
+            assert!(
+                !entry.path.to_string_lossy().contains("nested"),
+                "Found file from excluded nested directory: {:?}",
+                entry.path
+            );
+        }
+
+        // Should find 3 .rs files (main.rs, lib.rs, test.rs) but not code.rs or script.py from nested
+        assert_eq!(entries.len(), 3, "Should find exactly 3 files (excluding nested directory)");
 
         Ok(())
     }
