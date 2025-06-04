@@ -90,17 +90,17 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                     .git_ignore(!args.no_ignore)
                     .ignore(!args.no_ignore);
 
-                                let mut override_builder = OverrideBuilder::new(path);
+                let mut override_builder = OverrideBuilder::new(path);
+
+                override_builder.add("!**/GLIMPSE.md")?;
+                override_builder.add("!**/.glimpse")?;
 
                 // Handle include patterns first (positive patterns)
                 if let Some(ref includes) = args.include {
                     for pattern in includes {
                         // Include patterns are positive patterns (no ! prefix)
                         if let Err(e) = override_builder.add(pattern) {
-                            eprintln!(
-                                "Warning: Invalid include pattern '{}': {}",
-                                pattern, e
-                            );
+                            eprintln!("Warning: Invalid include pattern '{}': {}", pattern, e);
                         }
                     }
                 }
@@ -188,18 +188,14 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                 {
                     // Need to check includes and excludes even for single files explicitly passed
                     let mut excluded = false;
-                    let mut override_builder =
-                        OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
+                    let mut override_builder = OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
 
                     // Handle include patterns first (positive patterns)
                     if let Some(ref includes) = args.include {
                         for pattern in includes {
                             // Include patterns are positive patterns (no ! prefix)
                             if let Err(e) = override_builder.add(pattern) {
-                                eprintln!(
-                                    "Warning: Invalid include pattern '{}': {}",
-                                    pattern, e
-                                );
+                                eprintln!("Warning: Invalid include pattern '{}': {}", pattern, e);
                             }
                         }
                     }
@@ -461,9 +457,9 @@ mod tests {
         for entry in &entries {
             let path_str = entry.path.to_string_lossy();
             assert!(
-                !path_str.contains("node_modules") &&
-                !path_str.contains("target") &&
-                !path_str.contains(".git"),
+                !path_str.contains("node_modules")
+                    && !path_str.contains("target")
+                    && !path_str.contains(".git"),
                 "Found file from excluded directory: {:?}",
                 entry.path
             );
@@ -499,7 +495,10 @@ mod tests {
         let entries = process_entries(&cli)?;
 
         // Verify only .rs and .py files were processed
-        assert!(!entries.is_empty(), "Should have found some .rs and .py files");
+        assert!(
+            !entries.is_empty(),
+            "Should have found some .rs and .py files"
+        );
         for entry in &entries {
             let ext = entry.path.extension().and_then(|ext| ext.to_str());
             assert!(
@@ -541,7 +540,11 @@ mod tests {
         }
 
         // Should find 3 .rs files (main.rs, lib.rs, code.rs) but not test.rs
-        assert_eq!(entries.len(), 3, "Should find exactly 3 .rs files (excluding test.rs)");
+        assert_eq!(
+            entries.len(),
+            3,
+            "Should find exactly 3 .rs files (excluding test.rs)"
+        );
 
         // Test including multiple file types but excluding a directory
         cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
@@ -549,7 +552,10 @@ mod tests {
         let entries = process_entries(&cli)?;
 
         // Verify only .rs and .py files were processed, but nested directory was excluded
-        assert!(!entries.is_empty(), "Should have found some .rs and .py files");
+        assert!(
+            !entries.is_empty(),
+            "Should have found some .rs and .py files"
+        );
         for entry in &entries {
             let ext = entry.path.extension().and_then(|ext| ext.to_str());
             assert!(
@@ -565,7 +571,11 @@ mod tests {
         }
 
         // Should find 3 .rs files (main.rs, lib.rs, test.rs) but not code.rs or script.py from nested
-        assert_eq!(entries.len(), 3, "Should find exactly 3 files (excluding nested directory)");
+        assert_eq!(
+            entries.len(),
+            3,
+            "Should find exactly 3 files (excluding nested directory)"
+        );
 
         Ok(())
     }
