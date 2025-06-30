@@ -10,7 +10,7 @@ mod url_processor;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
-use crate::config::{get_config_path, load_config, load_repo_config, save_repo_config, RepoConfig};
+use crate::config::{get_config_path, load_config, load_repo_config, save_repo_config, RepoConfig, is_project_declined, mark_project_declined};
 use crate::git_processor::GitProcessor;
 use crate::url_processor::UrlProcessor;
 use std::fs;
@@ -64,15 +64,24 @@ fn main() -> anyhow::Result<()> {
             let repo_config = load_repo_config(&glimpse_file)?;
             apply_repo_config(&mut args, &repo_config);
         } else if has_custom_options(&args) {
-            print!("Would you like to save these options as defaults for this directory? (y/n): ");
-            io::stdout().flush()?;
-            let mut response = String::new();
-            io::stdin().read_line(&mut response)?;
+            // Check if user has previously declined to save config for this project
+            if !is_project_declined(&root_dir) {
+                print!("Would you like to save these options as defaults for this directory? (y/n): ");
+                io::stdout().flush()?;
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
 
-            if response.trim().to_lowercase() == "y" {
-                let repo_config = create_repo_config_from_args(&args);
-                save_repo_config(&glimpse_file, &repo_config)?;
-                println!("Configuration saved to {}", glimpse_file.display());
+                let response = response.trim().to_lowercase();
+                if response == "y" || response == "yes" {
+                    let repo_config = create_repo_config_from_args(&args);
+                    save_repo_config(&glimpse_file, &repo_config)?;
+                    println!("Configuration saved to {}", glimpse_file.display());
+                } else if response == "n" || response == "no" {
+                    // Mark this project as declined so we don't ask again
+                    if let Err(e) = mark_project_declined(&root_dir) {
+                        eprintln!("Warning: Could not save preference: {}", e);
+                    }
+                }
             }
         }
     }
