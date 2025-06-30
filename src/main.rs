@@ -10,7 +10,7 @@ mod url_processor;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
-use crate::config::{get_config_path, load_config, load_repo_config, save_repo_config, RepoConfig};
+use crate::config::{get_config_path, load_config, load_repo_config, save_repo_config, save_config, RepoConfig};
 use crate::git_processor::GitProcessor;
 use crate::url_processor::UrlProcessor;
 use std::fs;
@@ -33,7 +33,7 @@ fn has_custom_options(args: &Cli) -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
-    let config = load_config()?;
+    let mut config = load_config()?;
     let mut args = Cli::parse_with_config(&config)?;
 
     if args.config_path {
@@ -59,20 +59,55 @@ fn main() -> anyhow::Result<()> {
             let repo_config = create_repo_config_from_args(&args);
             save_repo_config(&glimpse_file, &repo_config)?;
             println!("Configuration saved to {}", glimpse_file.display());
+
+            // If the user explicitly saved a config, remove this directory from the skipped list
+            if let Ok(canonical_root) = std::fs::canonicalize(&root_dir) {
+                let root_str = canonical_root.to_string_lossy().to_string();
+                if let Some(pos) = config
+                    .skipped_prompt_repos
+                    .iter()
+                    .position(|p| p == &root_str)
+                {
+                    config.skipped_prompt_repos.remove(pos);
+                    save_config(&config)?;
+                }
+            }
         } else if glimpse_file.exists() {
             println!("Loading configuration from {}", glimpse_file.display());
             let repo_config = load_repo_config(&glimpse_file)?;
             apply_repo_config(&mut args, &repo_config);
         } else if has_custom_options(&args) {
-            print!("Would you like to save these options as defaults for this directory? (y/n): ");
-            io::stdout().flush()?;
-            let mut response = String::new();
-            io::stdin().read_line(&mut response)?;
+            // Determine canonical root directory path for consistent tracking
+            let canonical_root = std::fs::canonicalize(&root_dir).unwrap_or(root_dir.clone());
+            let root_str = canonical_root.to_string_lossy().to_string();
 
-            if response.trim().to_lowercase() == "y" {
-                let repo_config = create_repo_config_from_args(&args);
-                save_repo_config(&glimpse_file, &repo_config)?;
-                println!("Configuration saved to {}", glimpse_file.display());
+            if !config.skipped_prompt_repos.contains(&root_str) {
+                print!(
+                    "Would you like to save these options as defaults for this directory? (y/n): "
+                );
+                io::stdout().flush()?;
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+
+                if response.trim().to_lowercase() == "y" {
+                    let repo_config = create_repo_config_from_args(&args);
+                    save_repo_config(&glimpse_file, &repo_config)?;
+                    println!("Configuration saved to {}", glimpse_file.display());
+
+                    // In case it was previously skipped, remove from skipped list
+                    if let Some(pos) = config
+                        .skipped_prompt_repos
+                        .iter()
+                        .position(|p| p == &root_str)
+                    {
+                        config.skipped_prompt_repos.remove(pos);
+                        save_config(&config)?;
+                    }
+                } else {
+                    // Record that user declined for this project
+                    config.skipped_prompt_repos.push(root_str);
+                    save_config(&config)?;
+                }
             }
         }
     }
