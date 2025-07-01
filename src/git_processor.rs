@@ -79,10 +79,7 @@ mod tests {
         ];
 
         for url in valid_urls {
-            assert!(
-                GitProcessor::is_git_url(url),
-                "URL should be valid: {url}"
-            );
+            assert!(GitProcessor::is_git_url(url), "URL should be valid: {url}");
         }
 
         for url in invalid_urls {

@@ -119,9 +119,7 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                                 };
 
                                 if let Err(e) = override_builder.add(&exclude_pattern) {
-                                    eprintln!(
-                                        "Warning: Invalid exclude pattern '{pattern}': {e}"
-                                    );
+                                    eprintln!("Warning: Invalid exclude pattern '{pattern}': {e}");
                                 }
                             }
                             Exclude::File(file_path) => {
