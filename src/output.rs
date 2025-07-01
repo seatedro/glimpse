@@ -143,7 +143,7 @@ fn try_copy_with_osc52(content: &str) -> Result<(), Box<dyn std::error::Error>> 
 pub fn handle_output(content: String, args: &Cli) -> Result<()> {
     // Print to stdout if no other output method is specified
     if args.print {
-        println!("{}", content);
+        println!("{content}");
     }
 
     // Copy to clipboard if requested
@@ -153,7 +153,7 @@ pub fn handle_output(content: String, args: &Cli) -> Result<()> {
             Err(_) => {
                 match try_copy_with_osc52(&content) {
                     Ok(_) => println!("Context prepared! (using terminal clipboard) Paste into your LLM of choice + Profit."),
-                    Err(e) => eprintln!("Warning: Failed to copy to clipboard: {}. Output will continue with other specified formats.", e)
+                    Err(e) => eprintln!("Warning: Failed to copy to clipboard: {e}. Output will continue with other specified formats.")
                 }
             },
         }

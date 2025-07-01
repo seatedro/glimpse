@@ -79,18 +79,13 @@ mod tests {
         ];
 
         for url in valid_urls {
-            assert!(
-                GitProcessor::is_git_url(url),
-                "URL should be valid: {}",
-                url
-            );
+            assert!(GitProcessor::is_git_url(url), "URL should be valid: {url}");
         }
 
         for url in invalid_urls {
             assert!(
                 !GitProcessor::is_git_url(url),
-                "URL should be invalid: {}",
-                url
+                "URL should be invalid: {url}"
             );
         }
     }
@@ -136,11 +131,11 @@ mod tests {
             let parsed_url = Url::parse(url).unwrap();
             let repo_name = parsed_url
                 .path_segments()
-                .and_then(|segments| segments.last())
+                .and_then(|mut segments| segments.next_back())
                 .map(|name| name.trim_end_matches(".git"))
                 .unwrap_or("repo");
 
-            assert_eq!(repo_name, expected_name, "Failed for URL: {}", url);
+            assert_eq!(repo_name, expected_name, "Failed for URL: {url}");
         }
     }
 
@@ -155,7 +150,7 @@ mod tests {
                     // Check for some common files that should be present
                     assert!(path.join("Cargo.toml").exists(), "Cargo.toml should exist");
                 }
-                Err(e) => println!("Skipping clone test due to error: {}", e),
+                Err(e) => println!("Skipping clone test due to error: {e}"),
             }
         }
     }

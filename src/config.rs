@@ -82,6 +82,12 @@ pub struct Config {
 
     #[serde(default)]
     pub traverse_links: bool,
+
+    /// List of canonical project directories for which the user has already declined to
+    /// save a local `.glimpse` configuration file. When a directory is present in this
+    /// list Glimpse will not prompt the user again.
+    #[serde(default)]
+    pub skipped_prompt_repos: Vec<String>,
 }
 
 impl Default for Config {
@@ -95,6 +101,7 @@ impl Default for Config {
             default_tokenizer_model: default_tokenizer_model(),
             default_link_depth: default_link_depth(),
             traverse_links: false,
+            skipped_prompt_repos: Vec::new(),
         }
     }
 }
@@ -201,4 +208,17 @@ pub fn load_repo_config(path: &Path) -> anyhow::Result<RepoConfig> {
     } else {
         Ok(RepoConfig::default())
     }
+}
+
+/// Persist the provided global configuration to disk, overriding any existing config file.
+pub fn save_config(config: &Config) -> anyhow::Result<()> {
+    let config_path = get_config_path()?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let config_str = toml::to_string_pretty(config)?;
+    std::fs::write(config_path, config_str)?;
+    Ok(())
 }

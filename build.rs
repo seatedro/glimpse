@@ -41,7 +41,7 @@ fn main() {
     for lang in languages.values() {
         for ext in &lang.extensions {
             let ext = ext.trim_start_matches('.');
-            code.push_str(&format!("    set.insert(\"{}\");\n", ext));
+            code.push_str(&format!("    set.insert(\"{ext}\");\n"));
         }
     }
 
@@ -54,7 +54,7 @@ fn main() {
 
     for lang in languages.values() {
         for filename in &lang.filenames {
-            code.push_str(&format!("    set.insert(\"{}\");\n", filename));
+            code.push_str(&format!("    set.insert(\"{filename}\");\n"));
         }
     }
 
@@ -67,7 +67,7 @@ fn main() {
 
     for lang in languages.values() {
         for interpreter in &lang.interpreters {
-            code.push_str(&format!("    set.insert(\"{}\");\n", interpreter));
+            code.push_str(&format!("    set.insert(\"{interpreter}\");\n"));
         }
     }
 

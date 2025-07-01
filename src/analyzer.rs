@@ -100,7 +100,7 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                     for pattern in includes {
                         // Include patterns are positive patterns (no ! prefix)
                         if let Err(e) = override_builder.add(pattern) {
-                            eprintln!("Warning: Invalid include pattern '{}': {}", pattern, e);
+                            eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
                         }
                     }
                 }
@@ -113,16 +113,13 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                                 // Add a '!' prefix if it doesn't already have one
                                 // This makes it a negative pattern (exclude)
                                 let exclude_pattern = if !pattern.starts_with('!') {
-                                    format!("!{}", pattern)
+                                    format!("!{pattern}")
                                 } else {
                                     pattern.clone()
                                 };
 
                                 if let Err(e) = override_builder.add(&exclude_pattern) {
-                                    eprintln!(
-                                        "Warning: Invalid exclude pattern '{}': {}",
-                                        pattern, e
-                                    );
+                                    eprintln!("Warning: Invalid exclude pattern '{pattern}': {e}");
                                 }
                             }
                             Exclude::File(file_path) => {
@@ -149,8 +146,7 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                                     let pattern = format!("!{}", file_path.display());
                                     if let Err(e) = override_builder.add(&pattern) {
                                         eprintln!(
-                                            "Warning: Could not add file exclude pattern '{}': {}",
-                                            pattern, e
+                                            "Warning: Could not add file exclude pattern '{pattern}': {e}"
                                         );
                                     }
                                 }
@@ -195,7 +191,7 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                         for pattern in includes {
                             // Include patterns are positive patterns (no ! prefix)
                             if let Err(e) = override_builder.add(pattern) {
-                                eprintln!("Warning: Invalid include pattern '{}': {}", pattern, e);
+                                eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
                             }
                         }
                     }
@@ -208,14 +204,13 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                                     // Add a '!' prefix if it doesn't already have one
                                     // This makes it a negative pattern (exclude)
                                     let exclude_pattern = if !pattern.starts_with('!') {
-                                        format!("!{}", pattern)
+                                        format!("!{pattern}")
                                     } else {
                                         pattern.clone()
                                     };
                                     if let Err(e) = override_builder.add(&exclude_pattern) {
                                         eprintln!(
-                                            "Warning: Invalid exclude pattern '{}': {}",
-                                            pattern, e
+                                            "Warning: Invalid exclude pattern '{pattern}': {e}"
                                         );
                                     }
                                 }
@@ -336,7 +331,7 @@ mod tests {
                 fs::create_dir_all(parent)?;
             }
             let mut file = File::create(&full_path)?;
-            writeln!(file, "{}", content)?;
+            writeln!(file, "{content}")?;
             created_files.push(full_path);
         }
 
@@ -393,7 +388,7 @@ mod tests {
                     // For patterns that should exclude, we need to add a "!" prefix
                     // to make them negative patterns (exclusions)
                     let exclude_pattern = if !pattern.starts_with('!') {
-                        format!("!{}", pattern)
+                        format!("!{pattern}")
                     } else {
                         pattern.clone()
                     };
@@ -419,8 +414,7 @@ mod tests {
 
             assert_eq!(
                 is_ignored, should_exclude,
-                "Failed for exclude: {:?}",
-                exclude
+                "Failed for exclude: {exclude:?}"
             );
         }
 
@@ -587,12 +581,12 @@ mod tests {
 
         // Test with depth limit of 1
         cli.max_depth = Some(1);
-        let _ = process_directory(&cli)?;
+        process_directory(&cli)?;
         // Verify only top-level files were processed
 
         // Test with depth limit of 2
         cli.max_depth = Some(2);
-        let _ = process_directory(&cli)?;
+        process_directory(&cli)?;
         // Verify files up to depth 2 were processed
 
         Ok(())
@@ -605,12 +599,12 @@ mod tests {
 
         // Test without hidden files
         cli.hidden = false;
-        let _ = process_directory(&cli)?;
+        process_directory(&cli)?;
         // Verify hidden files were not processed
 
         // Test with hidden files
         cli.hidden = true;
-        let _ = process_directory(&cli)?;
+        process_directory(&cli)?;
         // Verify hidden files were processed
 
         Ok(())
@@ -622,7 +616,7 @@ mod tests {
         let rust_file = files.iter().find(|f| f.ends_with("main.rs")).unwrap();
 
         let cli = create_test_cli(rust_file);
-        let _ = process_directory(&cli)?;
+        process_directory(&cli)?;
         // Verify single file was processed correctly
 
         Ok(())
