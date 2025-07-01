@@ -10,7 +10,9 @@ mod url_processor;
 
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
-use crate::config::{get_config_path, load_config, load_repo_config, save_repo_config, save_config, RepoConfig};
+use crate::config::{
+    get_config_path, load_config, load_repo_config, save_config, save_repo_config, RepoConfig,
+};
 use crate::git_processor::GitProcessor;
 use crate::url_processor::UrlProcessor;
 use std::fs;
