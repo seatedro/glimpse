@@ -29,7 +29,7 @@ impl UrlProcessor {
                 .template("{spinner:.green} {msg}")
                 .unwrap(),
         );
-        pb.set_message(format!("Processing {}", url));
+        pb.set_message(format!("Processing {url}"));
 
         let content = self.fetch_url(&url)?;
         let mut markdown = self.html_to_markdown(&content, &url);
@@ -39,18 +39,18 @@ impl UrlProcessor {
             for link in links {
                 if !self.visited.contains(&link) {
                     self.visited.insert(link.clone());
-                    pb.set_message(format!("Processing sublink: {}", link));
+                    pb.set_message(format!("Processing sublink: {link}"));
                     let mut sub_processor = UrlProcessor::new(self.max_depth - 1);
                     if let Ok(sub_content) = sub_processor.process_url(&link, true) {
                         markdown.push_str("\n\n---\n\n");
-                        markdown.push_str(&format!("## Content from {}\n\n", link));
+                        markdown.push_str(&format!("## Content from {link}\n\n"));
                         markdown.push_str(&sub_content);
                     }
                 }
             }
         }
 
-        pb.finish_with_message(format!("Finished processing {}", url));
+        pb.finish_with_message(format!("Finished processing {url}"));
 
         if let Ok(mut clipboard) = Clipboard::new() {
             let _ = clipboard.set_text(&markdown);
@@ -156,9 +156,9 @@ impl UrlProcessor {
                             }
                             let link_text = link_text.trim();
                             if link_text.is_empty() {
-                                output.push_str(&format!("[{}]({})", href, href));
+                                output.push_str(&format!("[{href}]({href})"));
                             } else {
-                                output.push_str(&format!("[{}]({})", link_text, href));
+                                output.push_str(&format!("[{link_text}]({href})"));
                             }
                         }
                     }

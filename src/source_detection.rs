@@ -121,8 +121,7 @@ mod tests {
             assert_eq!(
                 extract_interpreter(input).as_deref(),
                 expected,
-                "Failed for input: {}",
-                input
+                "Failed for input: {input}"
             );
         }
     }
@@ -151,7 +150,7 @@ mod tests {
         for (name, content, expected) in test_cases {
             let path = dir.path().join(name);
             let mut file = File::create(&path).unwrap();
-            writeln!(file, "{}", content).unwrap();
+            writeln!(file, "{content}").unwrap();
 
             assert_eq!(
                 is_source_file(&path),

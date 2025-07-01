@@ -168,7 +168,7 @@ fn main() -> anyhow::Result<()> {
                 fs::write(output_file, content)?;
                 println!("Output written to: {}", output_file.display());
             } else if args.print {
-                println!("{}", content);
+                println!("{content}");
             } else {
                 // Default behavior for URLs if no -f or --print: copy to clipboard
                 match arboard::Clipboard::new()
