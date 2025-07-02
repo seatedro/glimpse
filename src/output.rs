@@ -15,35 +15,87 @@ pub struct FileEntry {
     pub size: u64,
 }
 
-pub fn generate_output(entries: &[FileEntry], format: OutputFormat) -> Result<String> {
+pub fn generate_output(entries: &[FileEntry], format: OutputFormat, xml_format: bool, project_name: Option<String>) -> Result<String> {
     let mut output = String::new();
+
+    if xml_format {
+        let project_name = project_name.unwrap_or_else(|| "project".to_string());
+        output.push_str(&format!("<context name=\"{}\">\n", xml_escape(&project_name)));
+    }
 
     match format {
         OutputFormat::Tree => {
-            output.push_str("Directory Structure:\n");
+            if xml_format {
+                output.push_str("<tree>\n");
+            } else {
+                output.push_str("Directory Structure:\n");
+            }
             output.push_str(&generate_tree(entries)?);
+            if xml_format {
+                output.push_str("</tree>\n");
+            }
         }
         OutputFormat::Files => {
-            output.push_str("File Contents:\n");
-            output.push_str(&generate_files(entries)?);
+            if xml_format {
+                output.push_str("<files>\n");
+            } else {
+                output.push_str("File Contents:\n");
+            }
+            output.push_str(&generate_files(entries, xml_format)?);
+            if xml_format {
+                output.push_str("</files>\n");
+            }
         }
         OutputFormat::Both => {
-            output.push_str("Directory Structure:\n");
+            if xml_format {
+                output.push_str("<tree>\n");
+            } else {
+                output.push_str("Directory Structure:\n");
+            }
             output.push_str(&generate_tree(entries)?);
-            output.push_str("\nFile Contents:\n");
-            output.push_str(&generate_files(entries)?);
+            if xml_format {
+                output.push_str("</tree>\n\n<files>\n");
+            } else {
+                output.push_str("\nFile Contents:\n");
+            }
+            output.push_str(&generate_files(entries, xml_format)?);
+            if xml_format {
+                output.push_str("</files>\n");
+            }
         }
     }
 
     // Add summary
-    output.push_str("\nSummary:\n");
-    output.push_str(&format!("Total files: {}\n", entries.len()));
-    output.push_str(&format!(
-        "Total size: {} bytes\n",
-        entries.iter().map(|e| e.size).sum::<u64>()
-    ));
+    if xml_format {
+        output.push_str("<summary>\n");
+        output.push_str(&format!("Total files: {}\n", entries.len()));
+        output.push_str(&format!(
+            "Total size: {} bytes\n",
+            entries.iter().map(|e| e.size).sum::<u64>()
+        ));
+        output.push_str("</summary>\n");
+    } else {
+        output.push_str("\nSummary:\n");
+        output.push_str(&format!("Total files: {}\n", entries.len()));
+        output.push_str(&format!(
+            "Total size: {} bytes\n",
+            entries.iter().map(|e| e.size).sum::<u64>()
+        ));
+    }
+
+    if xml_format {
+        output.push_str("</context>");
+    }
 
     Ok(output)
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 pub fn display_token_counts(token_counter: TokenCounter, entries: &[FileEntry]) -> Result<()> {
@@ -117,15 +169,24 @@ fn generate_tree(entries: &[FileEntry]) -> Result<String> {
     Ok(output)
 }
 
-fn generate_files(entries: &[FileEntry]) -> Result<String> {
+fn generate_files(entries: &[FileEntry], xml_format: bool) -> Result<String> {
     let mut output = String::new();
 
     for entry in entries {
-        output.push_str(&format!("\nFile: {}\n", entry.path.display()));
-        output.push_str(&"=".repeat(48));
-        output.push('\n');
-        output.push_str(&entry.content);
-        output.push('\n');
+        if xml_format {
+            output.push_str(&format!("<file path=\"{}\">\n", xml_escape(entry.path.display().to_string().as_str())));
+            output.push_str(&"=".repeat(48));
+            output.push('\n');
+            output.push_str(&entry.content);
+            output.push('\n');
+            output.push_str("</file>\n");
+        } else {
+            output.push_str(&format!("\nFile: {}\n", entry.path.display()));
+            output.push_str(&"=".repeat(48));
+            output.push('\n');
+            output.push_str(&entry.content);
+            output.push('\n');
+        }
     }
 
     Ok(output)
@@ -280,7 +341,7 @@ mod tests {
     #[test]
     fn test_files_output() {
         let entries = create_test_entries();
-        let files = generate_files(&entries).unwrap();
+        let files = generate_files(&entries, false).unwrap();
         let expected = format!(
             "\nFile: {}\n{}\n{}\n\nFile: {}\n{}\n{}\n",
             "src/main.rs",
@@ -298,21 +359,53 @@ mod tests {
         let entries = create_test_entries();
 
         // Test tree format
-        let tree_output = generate_output(&entries, OutputFormat::Tree).unwrap();
+        let tree_output = generate_output(&entries, OutputFormat::Tree, false, None).unwrap();
         assert!(tree_output.contains("Directory Structure:"));
         assert!(tree_output.contains("src/"));
         assert!(tree_output.contains("main.rs"));
 
         // Test files format
-        let files_output = generate_output(&entries, OutputFormat::Files).unwrap();
+        let files_output = generate_output(&entries, OutputFormat::Files, false, None).unwrap();
         assert!(files_output.contains("File Contents:"));
         assert!(files_output.contains("fn main()"));
         assert!(files_output.contains("pub fn helper()"));
 
         // Test both format
-        let both_output = generate_output(&entries, OutputFormat::Both).unwrap();
+        let both_output = generate_output(&entries, OutputFormat::Both, false, None).unwrap();
         assert!(both_output.contains("Directory Structure:"));
         assert!(both_output.contains("File Contents:"));
+    }
+
+    #[test]
+    fn test_xml_output() {
+        let entries = create_test_entries();
+        
+        // Test XML tree format
+        let xml_tree_output = generate_output(&entries, OutputFormat::Tree, true, Some("test_project".to_string())).unwrap();
+        assert!(xml_tree_output.contains("<context name=\"test_project\">"));
+        assert!(xml_tree_output.contains("<tree>"));
+        assert!(xml_tree_output.contains("</tree>"));
+        assert!(xml_tree_output.contains("<summary>"));
+        assert!(xml_tree_output.contains("</summary>"));
+        assert!(xml_tree_output.contains("</context>"));
+
+        // Test XML files format
+        let xml_files_output = generate_output(&entries, OutputFormat::Files, true, Some("test_project".to_string())).unwrap();
+        assert!(xml_files_output.contains("<context name=\"test_project\">"));
+        assert!(xml_files_output.contains("<files>"));
+        assert!(xml_files_output.contains("<file path=\"src/main.rs\">"));
+        assert!(xml_files_output.contains("</file>"));
+        assert!(xml_files_output.contains("</files>"));
+        assert!(xml_files_output.contains("</context>"));
+
+        // Test XML both format
+        let xml_both_output = generate_output(&entries, OutputFormat::Both, true, Some("test_project".to_string())).unwrap();
+        assert!(xml_both_output.contains("<context name=\"test_project\">"));
+        assert!(xml_both_output.contains("<tree>"));
+        assert!(xml_both_output.contains("</tree>"));
+        assert!(xml_both_output.contains("<files>"));
+        assert!(xml_both_output.contains("</files>"));
+        assert!(xml_both_output.contains("</context>"));
     }
 
     #[test]
@@ -345,6 +438,7 @@ mod tests {
             traverse_links: false,
             link_depth: None,
             config_path: false,
+            xml: false,
         };
 
         handle_output(content.clone(), &args).unwrap();
