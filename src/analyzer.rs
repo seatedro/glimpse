@@ -64,14 +64,14 @@ pub fn process_directory(args: &Cli) -> Result<()> {
 fn determine_project_name(paths: &[String]) -> String {
     if let Some(first_path) = paths.first() {
         let path = std::path::Path::new(first_path);
-        
+
         // If it's a directory, use its name
         if path.is_dir() {
             if let Some(name) = path.file_name() {
                 return name.to_string_lossy().to_string();
             }
         }
-        
+
         // If it's a file, use the parent directory name
         if path.is_file() {
             if let Some(parent) = path.parent() {
@@ -80,7 +80,7 @@ fn determine_project_name(paths: &[String]) -> String {
                 }
             }
         }
-        
+
         // Fallback to just the path itself
         first_path.clone()
     } else {

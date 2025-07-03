@@ -15,12 +15,20 @@ pub struct FileEntry {
     pub size: u64,
 }
 
-pub fn generate_output(entries: &[FileEntry], format: OutputFormat, xml_format: bool, project_name: Option<String>) -> Result<String> {
+pub fn generate_output(
+    entries: &[FileEntry],
+    format: OutputFormat,
+    xml_format: bool,
+    project_name: Option<String>,
+) -> Result<String> {
     let mut output = String::new();
 
     if xml_format {
         let project_name = project_name.unwrap_or_else(|| "project".to_string());
-        output.push_str(&format!("<context name=\"{}\">\n", xml_escape(&project_name)));
+        output.push_str(&format!(
+            "<context name=\"{}\">\n",
+            xml_escape(&project_name)
+        ));
     }
 
     match format {
@@ -174,7 +182,10 @@ fn generate_files(entries: &[FileEntry], xml_format: bool) -> Result<String> {
 
     for entry in entries {
         if xml_format {
-            output.push_str(&format!("<file path=\"{}\">\n", xml_escape(entry.path.display().to_string().as_str())));
+            output.push_str(&format!(
+                "<file path=\"{}\">\n",
+                xml_escape(entry.path.display().to_string().as_str())
+            ));
             output.push_str(&"=".repeat(48));
             output.push('\n');
             output.push_str(&entry.content);
@@ -379,9 +390,15 @@ mod tests {
     #[test]
     fn test_xml_output() {
         let entries = create_test_entries();
-        
+
         // Test XML tree format
-        let xml_tree_output = generate_output(&entries, OutputFormat::Tree, true, Some("test_project".to_string())).unwrap();
+        let xml_tree_output = generate_output(
+            &entries,
+            OutputFormat::Tree,
+            true,
+            Some("test_project".to_string()),
+        )
+        .unwrap();
         assert!(xml_tree_output.contains("<context name=\"test_project\">"));
         assert!(xml_tree_output.contains("<tree>"));
         assert!(xml_tree_output.contains("</tree>"));
@@ -390,7 +407,13 @@ mod tests {
         assert!(xml_tree_output.contains("</context>"));
 
         // Test XML files format
-        let xml_files_output = generate_output(&entries, OutputFormat::Files, true, Some("test_project".to_string())).unwrap();
+        let xml_files_output = generate_output(
+            &entries,
+            OutputFormat::Files,
+            true,
+            Some("test_project".to_string()),
+        )
+        .unwrap();
         assert!(xml_files_output.contains("<context name=\"test_project\">"));
         assert!(xml_files_output.contains("<files>"));
         assert!(xml_files_output.contains("<file path=\"src/main.rs\">"));
@@ -399,7 +422,13 @@ mod tests {
         assert!(xml_files_output.contains("</context>"));
 
         // Test XML both format
-        let xml_both_output = generate_output(&entries, OutputFormat::Both, true, Some("test_project".to_string())).unwrap();
+        let xml_both_output = generate_output(
+            &entries,
+            OutputFormat::Both,
+            true,
+            Some("test_project".to_string()),
+        )
+        .unwrap();
         assert!(xml_both_output.contains("<context name=\"test_project\">"));
         assert!(xml_both_output.contains("<tree>"));
         assert!(xml_both_output.contains("</tree>"));
