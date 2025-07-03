@@ -114,6 +114,10 @@ pub struct Cli {
     /// Maximum depth to traverse sublinks (default: 1)
     #[arg(long)]
     pub link_depth: Option<usize>,
+
+    /// Output in XML format for better LLM compatibility
+    #[arg(short = 'x', long)]
+    pub xml: bool,
 }
 
 impl Cli {

@@ -41,8 +41,15 @@ pub fn process_directory(args: &Cli) -> Result<()> {
         fs::write(pdf_path, pdf_data)?;
         println!("PDF output written to: {}", pdf_path.display());
     } else {
+        // Determine project name for XML output
+        let project_name = if args.xml {
+            Some(determine_project_name(&args.paths))
+        } else {
+            None
+        };
+
         // Handle output (print/copy/save)
-        let output = generate_output(&entries, output_format)?;
+        let output = generate_output(&entries, output_format, args.xml, project_name)?;
         handle_output(output, args)?;
     }
 
@@ -52,6 +59,33 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn determine_project_name(paths: &[String]) -> String {
+    if let Some(first_path) = paths.first() {
+        let path = std::path::Path::new(first_path);
+
+        // If it's a directory, use its name
+        if path.is_dir() {
+            if let Some(name) = path.file_name() {
+                return name.to_string_lossy().to_string();
+            }
+        }
+
+        // If it's a file, use the parent directory name
+        if path.is_file() {
+            if let Some(parent) = path.parent() {
+                if let Some(name) = parent.file_name() {
+                    return name.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // Fallback to just the path itself
+        first_path.clone()
+    } else {
+        "project".to_string()
+    }
 }
 
 pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
@@ -361,6 +395,7 @@ mod tests {
             pdf: None,
             traverse_links: false,
             link_depth: None,
+            xml: false,
         }
     }
 

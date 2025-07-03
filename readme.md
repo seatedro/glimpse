@@ -16,6 +16,7 @@ A blazingly fast tool for peeking at codebases. Perfect for loading your codebas
 - 🔗 Web content processing with Markdown conversion
 - 📦 Git repository support
 - 🌐 URL traversal with configurable depth
+- 🏷️ XML output format for better LLM compatibility
 
 ## Installation
 
@@ -115,6 +116,9 @@ glimpse --config_path
 
 # Initialize a .glimpse config file in the current directory
 glimpse --config
+
+# Output in XML format for better LLM compatibility
+glimpse -x /path/to/project
 ```
 
 ## CLI Options
@@ -146,6 +150,7 @@ Options:
       --traverse-links             Traverse links when processing URLs
       --link-depth <DEPTH>         Maximum depth to traverse links (default: 1)
       --pdf <PATH>                 Save output as PDF
+  -x, --xml                        Output in XML format for better LLM compatibility
   -h, --help                       Print help
   -V, --version                    Print version
 ```
@@ -177,6 +182,60 @@ default_excludes = [
     "**/target/**",
     "**/node_modules/**"
 ]
+```
+
+## XML Output Format
+
+Glimpse supports XML output format designed for better compatibility with Large Language Models (LLMs) like Claude, GPT, and others. When using the `-x` or `--xml` flag, the output is structured with clear XML tags that help LLMs better understand the context and structure of your codebase.
+
+### XML Structure
+
+The XML output wraps all content in a `<context>` tag with the project name:
+
+```xml
+<context name="my_project">
+<tree>
+└── src/
+  └── main.rs
+</tree>
+
+<files>
+<file path="src/main.rs">
+================================================
+fn main() {
+    println!("Hello, World!");
+}
+</file>
+</files>
+
+<summary>
+Total files: 1
+Total size: 45 bytes
+</summary>
+</context>
+```
+
+### Benefits for LLM Usage
+
+- **Clear Context Boundaries**: The `<context>` wrapper helps LLMs understand where your codebase begins and ends
+- **Structured Information**: Separate sections for directory tree, file contents, and summary
+- **Proper Escaping**: XML-safe content that won't confuse parsers
+- **Project Identification**: Automatic project name detection for better context
+
+### Usage Examples
+
+```bash
+# Basic XML output
+glimpse -x /path/to/project
+
+# XML output with file save
+glimpse -x -f project.xml /path/to/project
+
+# XML output to stdout
+glimpse -x --print /path/to/project
+
+# XML output with specific includes
+glimpse -x -i "*.rs,*.py" /path/to/project
 ```
 
 ## Token Counting
