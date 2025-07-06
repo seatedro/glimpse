@@ -79,6 +79,7 @@ impl FilePicker {
                     match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('?') => self.show_help = !self.show_help,
+                        KeyCode::Char('a') if !self.show_help => self.select_all_items(),
                         KeyCode::Char('x')
                             if !self.show_help && !self.selected_files.is_empty() =>
                         {
@@ -332,6 +333,21 @@ impl FilePicker {
         Ok(())
     }
 
+    fn select_all_items(&mut self) {
+        let before = self.selected_files.len();
+
+        for path in &self.files {
+            if path.is_file() && !self.selected_files.contains(path) {
+                self.selected_files.push(path.clone());
+            }
+        }
+
+        // If this was previously empty, move the buffer cursor to the first item
+        if before == 0 && !self.selected_files.is_empty() {
+            self.selected_list_state.select(Some(0));
+        }
+    }
+
     fn go_up(&mut self) -> Result<()> {
         if let Some(parent) = self.current_dir.parent() {
             self.current_dir = parent.to_path_buf();
@@ -360,6 +376,8 @@ impl FilePicker {
             Line::from("  Select/open directory"),
             Line::from(Span::styled("x", Style::default().fg(Color::Yellow))),
             Line::from("  Unselect file"),
+            Line::from(Span::styled("a", Style::default().fg(Color::Yellow))),
+            Line::from("  Select all files"),
             Line::from(Span::styled(
                 "Backspace",
                 Style::default().fg(Color::Yellow),
