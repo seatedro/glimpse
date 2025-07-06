@@ -79,7 +79,7 @@ impl FilePicker {
                     match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('?') => self.show_help = !self.show_help,
-                        KeyCode::Char('a') if !self.show_help => self.select_all_items(),
+                        KeyCode::Char('a') if !self.show_help => self.select_all(),
                         KeyCode::Char('x')
                             if !self.show_help && !self.selected_files.is_empty() =>
                         {
@@ -333,7 +333,7 @@ impl FilePicker {
         Ok(())
     }
 
-    fn select_all_items(&mut self) {
+    fn select_all(&mut self) {
         let before = self.selected_files.len();
 
         for path in &self.files {
