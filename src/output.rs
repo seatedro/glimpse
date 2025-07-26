@@ -449,6 +449,7 @@ mod tests {
             config: false,
             paths: vec![".".to_string()],
             include: None,
+            only_include: None,
             exclude: None,
             max_size: Some(1000),
             max_depth: Some(10),
