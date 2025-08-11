@@ -106,6 +106,23 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
         return false;
     }
 
+    // Handle replacement mode with --only-include
+    if let Some(ref only_includes) = args.only_include {
+        let matches_only_include = matches_include_patterns(path, only_includes, base_path);
+
+        if !matches_only_include {
+            return false;
+        }
+
+        // Apply excludes if any
+        if let Some(ref excludes) = args.exclude {
+            return !matches_exclude_patterns(path, excludes, base_path);
+        }
+
+        return true;
+    }
+
+    // Handle additive mode
     // Check if it's a source file
     let is_source = source_detection::is_source_file(path);
 
@@ -357,6 +374,7 @@ mod tests {
             paths: vec![dir_path.to_string_lossy().to_string()],
             config_path: false,
             include: None,
+            only_include: None,
             exclude: None,
             max_size: Some(10 * 1024 * 1024), // 10MB
             max_depth: Some(10),
@@ -875,6 +893,169 @@ mod tests {
 
         // Should be more than just the .peb file
         assert!(entries.len() > 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_only_include_replacement_behavior() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create various test files including non-source files
+        fs::write(dir.path().join("config.conf"), "key=value")?;
+        fs::write(dir.path().join("data.toml"), "[section]\nkey = 'value'")?;
+        fs::write(dir.path().join("template.peb"), "template content")?;
+
+        let mut cli = create_test_cli(dir.path());
+
+        // Test 1: --only-include should ONLY include specified patterns, no other files
+        cli.only_include = Some(vec!["*.conf".to_string()]);
+        let entries = process_entries(&cli)?;
+
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.extension().and_then(|ext| ext.to_str()) == Some("conf"));
+
+        // Verify no other files are included
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(!extensions.contains(&"rs"));
+        assert!(!extensions.contains(&"py"));
+        assert!(!extensions.contains(&"md"));
+        assert!(!extensions.contains(&"toml"));
+
+        // Test 2: Multiple patterns in --only-include
+        cli.only_include = Some(vec!["*.conf".to_string(), "*.toml".to_string()]);
+        let entries = process_entries(&cli)?;
+
+        assert_eq!(entries.len(), 2);
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"conf"));
+        assert!(extensions.contains(&"toml"));
+        assert!(!extensions.contains(&"rs")); // No other files
+        assert!(!extensions.contains(&"py"));
+
+        // Test 3: --only-include with exclude patterns
+        cli.only_include = Some(vec![
+            "*.conf".to_string(),
+            "*.toml".to_string(),
+            "*.peb".to_string(),
+        ]);
+        cli.exclude = Some(vec![Exclude::Pattern("*.toml".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        assert_eq!(entries.len(), 2); // conf and peb, but not toml (excluded)
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"conf"));
+        assert!(extensions.contains(&"peb"));
+        assert!(!extensions.contains(&"toml")); // Excluded
+        assert!(!extensions.contains(&"rs")); // No other files
+
+        // Test 4: --only-include with pattern that matches nothing
+        cli.only_include = Some(vec!["*.nonexistent".to_string()]);
+        cli.exclude = None;
+        let entries = process_entries(&cli)?;
+
+        assert_eq!(entries.len(), 0); // Should match nothing
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_only_include_vs_include_behavior_difference() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create a non-source file
+        fs::write(dir.path().join("config.conf"), "key=value")?;
+
+        let mut cli = create_test_cli(dir.path());
+
+        // Test additive behavior with --include
+        cli.include = Some(vec!["*.conf".to_string()]);
+        cli.only_include = None;
+        let additive_entries = process_entries(&cli)?;
+
+        // Should include conf + source files
+        let additive_extensions: Vec<_> = additive_entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(additive_extensions.contains(&"conf")); // Additional pattern
+        assert!(additive_extensions.contains(&"rs")); // Source files
+        assert!(additive_extensions.contains(&"py")); // Source files
+        assert!(additive_extensions.contains(&"md")); // Source files
+
+        // Test replacement behavior with --only-include
+        cli.include = None;
+        cli.only_include = Some(vec!["*.conf".to_string()]);
+        let replacement_entries = process_entries(&cli)?;
+
+        // Should include ONLY conf files
+        assert_eq!(replacement_entries.len(), 1);
+        assert!(
+            replacement_entries[0]
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                == Some("conf")
+        );
+
+        let replacement_extensions: Vec<_> = replacement_entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(replacement_extensions.contains(&"conf")); // Only pattern
+        assert!(!replacement_extensions.contains(&"rs")); // No source files
+        assert!(!replacement_extensions.contains(&"py")); // No source files
+        assert!(!replacement_extensions.contains(&"md")); // No source files
+
+        // Verify the counts are different
+        assert!(additive_entries.len() > replacement_entries.len());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_only_include_single_file_processing() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create and test single file processing with a truly non-source file
+        let config_path = dir.path().join("config.conf");
+        fs::write(&config_path, "key=value")?;
+
+        let mut cli = create_test_cli(&config_path);
+        cli.paths = vec![config_path.to_string_lossy().to_string()];
+
+        // Test 1: Single non-source file without --only-include should be rejected
+        cli.only_include = None;
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 0);
+
+        // Test 2: Single non-source file WITH --only-include should be accepted
+        cli.only_include = Some(vec!["*.conf".to_string()]);
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.extension().and_then(|ext| ext.to_str()) == Some("conf"));
+
+        // Test 3: Single source file WITH --only-include that doesn't match should be rejected
+        let rs_path = dir.path().join("src/main.rs");
+        cli.paths = vec![rs_path.to_string_lossy().to_string()];
+        cli.only_include = Some(vec!["*.conf".to_string()]);
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 0);
+
+        // Test 4: Single source file WITH --only-include that matches should be accepted
+        cli.only_include = Some(vec!["*.rs".to_string()]);
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.extension().and_then(|ext| ext.to_str()) == Some("rs"));
 
         Ok(())
     }

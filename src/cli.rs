@@ -39,9 +39,13 @@ pub struct Cli {
     #[arg(long)]
     pub config_path: bool,
 
-    /// Additional patterns to include (e.g. "*.rs,*.go")
+    /// Additional patterns to include (e.g. "*.rs,*.go") - adds to source file detection
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
+
+    /// Only include files matching these patterns (e.g. "*.yml,*.toml") - replaces source file detection
+    #[arg(long, value_delimiter = ',')]
+    pub only_include: Option<Vec<String>>,
 
     /// Additional patterns to exclude
     #[arg(short, long, value_parser = parse_exclude, value_delimiter = ',')]
@@ -168,6 +172,13 @@ impl Cli {
     }
 
     pub fn validate_args(&self, is_url: bool) -> anyhow::Result<()> {
+        // Validate that both include and only_include are not used together
+        if self.include.is_some() && self.only_include.is_some() {
+            return Err(anyhow::anyhow!(
+                "Cannot use both --include and --only-include flags together. Use --include for additive behavior (add to source files) or --only-include for replacement behavior (only specified patterns)."
+            ));
+        }
+
         if is_url {
             return Ok(());
         }
