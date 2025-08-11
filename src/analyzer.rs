@@ -88,6 +88,119 @@ fn determine_project_name(paths: &[String]) -> String {
     }
 }
 
+fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -> bool {
+    // Basic file checks
+    if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+        return false;
+    }
+
+    let path = entry.path();
+    let max_size = args.max_size.expect("max_size should be set from config");
+
+    // Size check
+    if !entry
+        .metadata()
+        .map(|m| m.len() <= max_size)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Check if it's a source file
+    let is_source = source_detection::is_source_file(path);
+
+    // Check if it matches additional include patterns
+    let matches_include = if let Some(ref includes) = args.include {
+        matches_include_patterns(path, includes, base_path)
+    } else {
+        false
+    };
+
+    // Include if EITHER source file OR matches include patterns
+    let should_include = is_source || matches_include;
+
+    if !should_include {
+        return false;
+    }
+
+    // Apply excludes to the union
+    if let Some(ref excludes) = args.exclude {
+        return !matches_exclude_patterns(path, excludes, base_path);
+    }
+
+    true
+}
+
+fn matches_include_patterns(path: &Path, includes: &[String], base_path: &Path) -> bool {
+    let mut override_builder = OverrideBuilder::new(base_path);
+
+    // Add include patterns (positive)
+    for pattern in includes {
+        if let Err(e) = override_builder.add(pattern) {
+            eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
+        }
+    }
+
+    let overrides = override_builder.build().unwrap_or_else(|_| {
+        // Return a default override that matches nothing if build fails
+        OverrideBuilder::new(base_path).build().unwrap()
+    });
+    let match_result = overrides.matched(path, false);
+
+    // Must be whitelisted and not ignored
+    match_result.is_whitelist() && !match_result.is_ignore()
+}
+
+fn matches_exclude_patterns(path: &Path, excludes: &[Exclude], base_path: &Path) -> bool {
+    let mut override_builder = OverrideBuilder::new(base_path);
+
+    // Add exclude patterns (negative)
+    for exclude in excludes {
+        match exclude {
+            Exclude::Pattern(pattern) => {
+                let exclude_pattern = if !pattern.starts_with('!') {
+                    format!("!{pattern}")
+                } else {
+                    pattern.clone()
+                };
+                if let Err(e) = override_builder.add(&exclude_pattern) {
+                    eprintln!("Warning: Invalid exclude pattern '{pattern}': {e}");
+                }
+            }
+            Exclude::File(file_path) => {
+                // Handle file exclusions
+                if file_path.is_absolute() {
+                    if file_path.exists() {
+                        if let Ok(relative_path) = file_path.strip_prefix(base_path) {
+                            let pattern = format!("!{}", relative_path.display());
+                            if let Err(e) = override_builder.add(&pattern) {
+                                eprintln!(
+                                    "Warning: Could not add file exclude pattern for '{}': {}",
+                                    file_path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    let pattern = format!("!{}", file_path.display());
+                    if let Err(e) = override_builder.add(&pattern) {
+                        eprintln!("Warning: Could not add file exclude pattern '{pattern}': {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    let overrides = override_builder.build().unwrap_or_else(|_| {
+        // Return a default override that matches nothing if build fails
+        OverrideBuilder::new(base_path).build().unwrap()
+    });
+    let match_result = overrides.matched(path, false);
+
+    match_result.is_ignore()
+}
+
 pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
     let max_size = args.max_size.expect("max_size should be set from config");
     let max_depth = args.max_depth.expect("max_depth should be set from config");
@@ -125,69 +238,8 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                     .ignore(!args.no_ignore);
 
                 let mut override_builder = OverrideBuilder::new(path);
-
                 override_builder.add("!**/GLIMPSE.md")?;
                 override_builder.add("!**/.glimpse")?;
-
-                // Handle include patterns first (positive patterns)
-                if let Some(ref includes) = args.include {
-                    for pattern in includes {
-                        // Include patterns are positive patterns (no ! prefix)
-                        if let Err(e) = override_builder.add(pattern) {
-                            eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
-                        }
-                    }
-                }
-
-                // Handle exclude patterns (negative patterns)
-                if let Some(ref excludes) = args.exclude {
-                    for exclude in excludes {
-                        match exclude {
-                            Exclude::Pattern(pattern) => {
-                                // Add a '!' prefix if it doesn't already have one
-                                // This makes it a negative pattern (exclude)
-                                let exclude_pattern = if !pattern.starts_with('!') {
-                                    format!("!{pattern}")
-                                } else {
-                                    pattern.clone()
-                                };
-
-                                if let Err(e) = override_builder.add(&exclude_pattern) {
-                                    eprintln!("Warning: Invalid exclude pattern '{pattern}': {e}");
-                                }
-                            }
-                            Exclude::File(file_path) => {
-                                // For file excludes, handle differently if:
-                                if file_path.is_absolute() {
-                                    // For absolute paths, check if they exist
-                                    if file_path.exists() {
-                                        // If base_path is part of file_path, make it relative
-                                        if let Ok(relative_path) = file_path.strip_prefix(path) {
-                                            let pattern = format!("!{}", relative_path.display());
-                                            if let Err(e) = override_builder.add(&pattern) {
-                                                eprintln!("Warning: Could not add file exclude pattern for '{}': {}", file_path.display(), e);
-                                            }
-                                        } else {
-                                            // This doesn't affect current directory
-                                            eprintln!(
-                                                "Note: File exclude not under current path: {}",
-                                                file_path.display()
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    // For relative paths like "src", use as-is with a ! prefix
-                                    let pattern = format!("!{}", file_path.display());
-                                    if let Err(e) = override_builder.add(&pattern) {
-                                        eprintln!(
-                                            "Warning: Could not add file exclude pattern '{pattern}': {e}"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 let overrides = override_builder.build()?;
                 builder.overrides(overrides);
 
@@ -195,94 +247,21 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
                     .build()
                     .par_bridge()
                     .filter_map(|entry| entry.ok())
-                    // No longer need the is_excluded filter here, WalkBuilder handles it
-                    .filter(|entry| {
-                        entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
-                            && source_detection::is_source_file(entry.path())
-                            && entry
-                                .metadata()
-                                .map(|m| m.len() <= max_size)
-                                .unwrap_or(false)
-                    })
+                    .filter(|entry| should_process_file(entry, args, path))
                     .filter_map(|entry| process_file(&entry, path).ok())
                     .collect();
 
                 all_entries.extend(dir_entries);
             } else if path.is_file() {
                 // Process single file
-                if source_detection::is_source_file(path)
-                    && path
-                        .metadata()
-                        .map(|m| m.len() <= max_size)
-                        .unwrap_or(false)
-                {
-                    // Need to check includes and excludes even for single files explicitly passed
-                    let mut excluded = false;
-                    let mut override_builder = OverrideBuilder::new(path.parent().unwrap_or(path)); // Base relative to parent
-
-                    // Handle include patterns first (positive patterns)
-                    if let Some(ref includes) = args.include {
-                        for pattern in includes {
-                            // Include patterns are positive patterns (no ! prefix)
-                            if let Err(e) = override_builder.add(pattern) {
-                                eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
-                            }
-                        }
-                    }
-
-                    // Handle exclude patterns (negative patterns)
-                    if let Some(ref excludes) = args.exclude {
-                        for exclude in excludes {
-                            match exclude {
-                                Exclude::Pattern(pattern) => {
-                                    // Add a '!' prefix if it doesn't already have one
-                                    // This makes it a negative pattern (exclude)
-                                    let exclude_pattern = if !pattern.starts_with('!') {
-                                        format!("!{pattern}")
-                                    } else {
-                                        pattern.clone()
-                                    };
-                                    if let Err(e) = override_builder.add(&exclude_pattern) {
-                                        eprintln!(
-                                            "Warning: Invalid exclude pattern '{pattern}': {e}"
-                                        );
-                                    }
-                                }
-                                Exclude::File(file_path) => {
-                                    if path == file_path {
-                                        excluded = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if excluded {
-                            continue;
-                        }
-                    }
-
-                    let overrides = override_builder.build()?;
-                    let match_result = overrides.matched(path, false);
-
-                    // If there are include patterns, the file must match at least one include pattern
-                    // and not be excluded by any exclude pattern
-                    if args.include.is_some() {
-                        // With include patterns: file must be whitelisted (matched by include) and not ignored (excluded)
-                        excluded = !match_result.is_whitelist() || match_result.is_ignore();
-                    } else {
-                        // Without include patterns: file is excluded only if it matches an exclude pattern
-                        excluded = match_result.is_ignore();
-                    }
-
-                    if !excluded {
-                        let entry = ignore::WalkBuilder::new(path)
-                            .build()
-                            .next()
-                            .and_then(|r| r.ok());
-                        if let Some(entry) = entry {
-                            if let Ok(file_entry) = process_file(&entry, path) {
-                                all_entries.push(file_entry);
-                            }
+                let entry = ignore::WalkBuilder::new(path)
+                    .build()
+                    .next()
+                    .and_then(|r| r.ok());
+                if let Some(entry) = entry {
+                    if should_process_file(&entry, args, path.parent().unwrap_or(path)) {
+                        if let Ok(file_entry) = process_file(&entry, path) {
+                            all_entries.push(file_entry);
                         }
                     }
                 }
@@ -467,8 +446,9 @@ mod tests {
 
         // Verify no .rs files were processed
         for entry in &entries {
-            assert!(
-                entry.path.extension().and_then(|ext| ext.to_str()) != Some("rs"),
+            assert_ne!(
+                entry.path.extension().and_then(|ext| ext.to_str()),
+                Some("rs"),
                 "Found .rs file that should have been excluded: {:?}",
                 entry.path
             );
@@ -502,43 +482,39 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test including only Rust files
+        // Test including additional Rust files (should get all source files)
         cli.include = Some(vec!["**/*.rs".to_string()]);
         let entries = process_entries(&cli)?;
 
-        // Verify only .rs files were processed
-        assert!(!entries.is_empty(), "Should have found some .rs files");
-        for entry in &entries {
-            assert!(
-                entry.path.extension().and_then(|ext| ext.to_str()) == Some("rs"),
-                "Found non-.rs file: {:?}",
-                entry.path
-            );
-        }
+        // Should include all source files (since .rs is already a source extension)
+        assert!(!entries.is_empty(), "Should have found files");
 
-        // Should find 4 .rs files: main.rs, lib.rs, test.rs, code.rs
-        assert_eq!(entries.len(), 4, "Should find exactly 4 .rs files");
+        // Should include source files: .rs, .py, .md
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
-        // Test including multiple patterns
-        cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
+        // Test including a non-source extension as additional
+        cli.include = Some(vec!["**/*.xyz".to_string()]);
+
+        // Create a .xyz file
+        fs::write(dir.path().join("test.xyz"), "data")?;
+
         let entries = process_entries(&cli)?;
 
-        // Verify only .rs and .py files were processed
-        assert!(
-            !entries.is_empty(),
-            "Should have found some .rs and .py files"
-        );
-        for entry in &entries {
-            let ext = entry.path.extension().and_then(|ext| ext.to_str());
-            assert!(
-                ext == Some("rs") || ext == Some("py"),
-                "Found file with unexpected extension: {:?}",
-                entry.path
-            );
-        }
-
-        // Should find 4 .rs files + 1 .py file = 5 total
-        assert_eq!(entries.len(), 5, "Should find exactly 5 .rs and .py files");
+        // Should include BOTH .xyz files AND normal source files
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"xyz")); // Additional pattern
+        assert!(extensions.contains(&"rs")); // Normal source file
+        assert!(extensions.contains(&"py")); // Normal source file
+        assert!(extensions.contains(&"md")); // Normal source file
 
         Ok(())
     }
@@ -548,19 +524,31 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test including only Rust files but excluding specific ones
-        cli.include = Some(vec!["**/*.rs".to_string()]);
+        // Test additional includes with excludes - should get all source files plus additional, minus excludes
+        cli.include = Some(vec!["**/*.xyz".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("**/test.rs".to_string())]);
+
+        // Create a .xyz file
+        fs::write(dir.path().join("test.xyz"), "data")?;
+
         let entries = process_entries(&cli)?;
 
-        // Verify only .rs files were processed, but test.rs was excluded
-        assert!(!entries.is_empty(), "Should have found some .rs files");
+        // Should include all source files + .xyz files, but exclude test.rs
+        assert!(!entries.is_empty(), "Should have found files");
+
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+
+        // Should have .xyz (additional) plus source files (.rs, .py, .md)
+        assert!(extensions.contains(&"xyz")); // Additional pattern
+        assert!(extensions.contains(&"rs")); // Source files (but not test.rs)
+        assert!(extensions.contains(&"py")); // Source files
+        assert!(extensions.contains(&"md")); // Source files
+
+        // Verify test.rs was excluded
         for entry in &entries {
-            assert!(
-                entry.path.extension().and_then(|ext| ext.to_str()) == Some("rs"),
-                "Found non-.rs file: {:?}",
-                entry.path
-            );
             assert!(
                 !entry.path.to_string_lossy().contains("test.rs"),
                 "Found excluded test.rs file: {:?}",
@@ -568,43 +556,19 @@ mod tests {
             );
         }
 
-        // Should find 3 .rs files (main.rs, lib.rs, code.rs) but not test.rs
-        assert_eq!(
-            entries.len(),
-            3,
-            "Should find exactly 3 .rs files (excluding test.rs)"
-        );
-
-        // Test including multiple file types but excluding a directory
-        cli.include = Some(vec!["**/*.rs".to_string(), "**/*.py".to_string()]);
+        // Test excluding a directory
+        cli.include = Some(vec!["**/*.xyz".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("**/nested/**".to_string())]);
         let entries = process_entries(&cli)?;
 
-        // Verify only .rs and .py files were processed, but nested directory was excluded
-        assert!(
-            !entries.is_empty(),
-            "Should have found some .rs and .py files"
-        );
+        // Should include source files + .xyz, but exclude nested directory
         for entry in &entries {
-            let ext = entry.path.extension().and_then(|ext| ext.to_str());
-            assert!(
-                ext == Some("rs") || ext == Some("py"),
-                "Found file with unexpected extension: {:?}",
-                entry.path
-            );
             assert!(
                 !entry.path.to_string_lossy().contains("nested"),
                 "Found file from excluded nested directory: {:?}",
                 entry.path
             );
         }
-
-        // Should find 3 .rs files (main.rs, lib.rs, test.rs) but not code.rs or script.py from nested
-        assert_eq!(
-            entries.len(),
-            3,
-            "Should find exactly 3 files (excluding nested directory)"
-        );
 
         Ok(())
     }
@@ -653,6 +617,264 @@ mod tests {
         let cli = create_test_cli(rust_file);
         process_directory(&cli)?;
         // Verify single file was processed correctly
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_include_patterns_extend_source_detection() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create a .peb file (not recognized by source detection)
+        let peb_path = dir.path().join("template.peb");
+        let mut peb_file = File::create(&peb_path)?;
+        writeln!(peb_file, "template content")?;
+
+        // Create a .xyz file (also not recognized)
+        let xyz_path = dir.path().join("data.xyz");
+        let mut xyz_file = File::create(&xyz_path)?;
+        writeln!(xyz_file, "data content")?;
+
+        let mut cli = create_test_cli(dir.path());
+
+        // Test 1: Without include patterns, non-source files should be excluded
+        cli.include = None;
+        let entries = process_entries(&cli)?;
+        assert!(!entries
+            .iter()
+            .any(|e| e.path.extension().and_then(|ext| ext.to_str()) == Some("peb")));
+        assert!(!entries
+            .iter()
+            .any(|e| e.path.extension().and_then(|ext| ext.to_str()) == Some("xyz")));
+
+        // Test 2: With include patterns, should ADD to source detection
+        cli.include = Some(vec!["*.peb".to_string()]);
+        let entries = process_entries(&cli)?;
+
+        // Should include .peb files PLUS all normal source files
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"peb")); // Additional pattern
+        assert!(extensions.contains(&"rs")); // Normal source file
+        assert!(extensions.contains(&"py")); // Normal source file
+        assert!(extensions.contains(&"md")); // Normal source file
+
+        // Test 3: Multiple include patterns (additive)
+        cli.include = Some(vec!["*.peb".to_string(), "*.xyz".to_string()]);
+        let entries = process_entries(&cli)?;
+
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"peb")); // Additional pattern
+        assert!(extensions.contains(&"xyz")); // Additional pattern
+        assert!(extensions.contains(&"rs")); // Normal source file
+        assert!(extensions.contains(&"py")); // Normal source file
+        assert!(extensions.contains(&"md")); // Normal source file
+
+        // Test 4: Include + exclude patterns (union then subtract)
+        cli.include = Some(vec!["*.peb".to_string(), "*.xyz".to_string()]);
+        cli.exclude = Some(vec![Exclude::Pattern("*.xyz".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"peb")); // Additional pattern, not excluded
+        assert!(!extensions.contains(&"xyz")); // Additional pattern, but excluded
+        assert!(extensions.contains(&"rs")); // Normal source file, not excluded
+        assert!(extensions.contains(&"py")); // Normal source file, not excluded
+        assert!(extensions.contains(&"md")); // Normal source file, not excluded
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_backward_compatibility_no_patterns() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Add some non-source files that should be ignored by default
+        let binary_path = dir.path().join("binary.bin");
+        fs::write(&binary_path, b"\x00\x01\x02\x03")?;
+
+        let config_path = dir.path().join("config.conf");
+        fs::write(&config_path, "key=value")?;
+
+        let mut cli = create_test_cli(dir.path());
+
+        // Test 1: No patterns specified - should only get source files
+        cli.include = None;
+        cli.exclude = None;
+        let entries = process_entries(&cli)?;
+
+        // Should find source files (.rs, .py, .md) but not .bin or .conf
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
+        assert!(!extensions.contains(&"bin"));
+        assert!(!extensions.contains(&"conf"));
+
+        // Test 2: Only exclude patterns - should work as before
+        cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        // Should still apply source detection, but exclude .rs files
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+
+        assert!(!extensions.contains(&"rs")); // Excluded
+        assert!(extensions.contains(&"py")); // Source file, not excluded
+        assert!(!extensions.contains(&"bin")); // Not source file
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_single_file_processing_with_patterns() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create a .peb file
+        let peb_path = dir.path().join("template.peb");
+        fs::write(&peb_path, "template content")?;
+
+        // Test 1: Single .peb file without include patterns - should be rejected
+        let mut cli = create_test_cli(&peb_path);
+        cli.paths = vec![peb_path.to_string_lossy().to_string()];
+        cli.include = None;
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 0);
+
+        // Test 2: Single .peb file WITH include patterns - should be accepted
+        cli.include = Some(vec!["*.peb".to_string()]);
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 1);
+
+        // Test 3: Single .rs file with exclude pattern - should be rejected
+        let rs_path = dir.path().join("src/main.rs");
+        cli.paths = vec![rs_path.to_string_lossy().to_string()];
+        cli.include = None;
+        cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
+        let entries = process_entries(&cli)?;
+        assert_eq!(entries.len(), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pattern_edge_cases() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create various test files
+        fs::write(dir.path().join("test.peb"), "content")?;
+        fs::write(dir.path().join("test.xyz"), "content")?;
+        fs::write(dir.path().join("script.py"), "print('test')")?;
+
+        let mut cli = create_test_cli(dir.path());
+
+        // Test 1: Empty include patterns (edge case) - should still get source files
+        cli.include = Some(vec![]);
+        let entries = process_entries(&cli)?;
+        // With empty include patterns, should still get source files
+        assert!(!entries.is_empty());
+
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"rs")); // Source files should still be included
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
+
+        // Test 2: Include pattern that matches source files (additive)
+        cli.include = Some(vec!["**/*.py".to_string()]);
+        let entries = process_entries(&cli)?;
+        // Should include source files + additional .py matches
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+        assert!(extensions.contains(&"py")); // Both existing and additional
+        assert!(extensions.contains(&"rs")); // Source files
+        assert!(extensions.contains(&"md")); // Source files
+
+        // Test 3: Include everything, then exclude
+        cli.include = Some(vec!["**/*".to_string()]);
+        cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
+        let entries = process_entries(&cli)?;
+
+        // Should include everything (.peb, .xyz, .py, .md from both source detection and include pattern) but not .rs files
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+
+        assert!(extensions.contains(&"peb"));
+        assert!(extensions.contains(&"xyz"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
+        assert!(!extensions.contains(&"rs"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_patterns_handling() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+        let mut cli = create_test_cli(dir.path());
+
+        // Test 1: Invalid glob pattern (this should not panic)
+        cli.include = Some(vec!["[invalid".to_string()]);
+        let _entries = process_entries(&cli)?;
+        // Should handle gracefully, possibly matching nothing
+
+        // Test 2: Mix of valid and invalid patterns
+        cli.include = Some(vec![
+            "**/*.rs".to_string(),
+            "[invalid".to_string(),
+            "**/*.py".to_string(),
+        ]);
+        let _entries = process_entries(&cli)?;
+        // Should process valid patterns, ignore invalid ones
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_include_patterns_are_additional() -> Result<()> {
+        let (dir, _files) = setup_test_directory()?;
+
+        // Create a .peb file
+        fs::write(dir.path().join("template.peb"), "template content")?;
+
+        let mut cli = create_test_cli(dir.path());
+        cli.include = Some(vec!["*.peb".to_string()]);
+
+        let entries = process_entries(&cli)?;
+
+        // Should include BOTH .peb files AND normal source files
+        let extensions: Vec<_> = entries
+            .iter()
+            .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
+            .collect();
+
+        assert!(extensions.contains(&"peb")); // Additional pattern
+        assert!(extensions.contains(&"rs")); // Normal source file
+        assert!(extensions.contains(&"py")); // Normal source file
+        assert!(extensions.contains(&"md")); // Normal source file
+
+        // Should be more than just the .peb file
+        assert!(entries.len() > 1);
 
         Ok(())
     }
