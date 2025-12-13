@@ -1,0 +1,394 @@
+[[language]]
+name = "go"
+extensions = ["go"]
+repo = "https://github.com/tree-sitter/tree-sitter-go"
+branch = "master"
+symbol = "tree_sitter_go"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_declaration
+    name: (field_identifier) @name
+    body: (block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (parenthesized_expression (identifier) @name)
+    (selector_expression field: (field_identifier) @name)
+    (parenthesized_expression (selector_expression field: (field_identifier) @name))
+  ]) @reference.call
+"""
+
+[[language]]
+name = "zig"
+extensions = ["zig"]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
+branch = "master"
+symbol = "tree_sitter_zig"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (field_expression member: (identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "c"
+extensions = ["c", "h"]
+repo = "https://github.com/tree-sitter/tree-sitter-c"
+branch = "master"
+symbol = "tree_sitter_c"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: [
+      (function_declarator
+        declarator: (identifier) @name)
+      (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @name))
+    ]
+    body: (compound_statement) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (field_expression field: (field_identifier) @name)
+    (parenthesized_expression (identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "cpp"
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx"]
+repo = "https://github.com/tree-sitter/tree-sitter-cpp"
+branch = "master"
+symbol = "tree_sitter_cpp"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (identifier) @name)
+    body: (compound_statement) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (qualified_identifier
+        name: (identifier) @name))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @name))
+    body: (compound_statement) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (qualified_identifier
+          name: [(identifier) (operator_name) (destructor_name)] @name)))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (qualified_identifier
+        name: (destructor_name) @name))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (template_declaration
+    (function_definition
+      declarator: (function_declarator
+        declarator: (qualified_identifier
+          name: (identifier) @name))
+      body: (compound_statement) @body)) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (qualified_identifier name: (identifier) @name)
+    (template_function name: (identifier) @name)
+    (field_expression field: (field_identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "bash"
+extensions = ["sh", "bash"]
+repo = "https://github.com/tree-sitter/tree-sitter-bash"
+branch = "master"
+symbol = "tree_sitter_bash"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    name: (word) @name
+    body: (compound_statement) @body) @function.definition
+)
+"""
+call_query = """
+(command_name (word) @name) @reference.call
+"""
+
+[[language]]
+name = "python"
+extensions = ["py"]
+repo = "https://github.com/tree-sitter/tree-sitter-python"
+branch = "master"
+symbol = "tree_sitter_python"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (class_definition
+    name: (identifier) @name
+    body: (block) @body) @class.definition
+)
+"""
+call_query = """
+(call
+  function: [
+    (identifier) @name
+    (attribute attribute: (identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "typescript"
+extensions = ["ts", "mts", "cts"]
+repo = "https://github.com/tree-sitter/tree-sitter-typescript"
+branch = "master"
+subpath = "typescript"
+symbol = "tree_sitter_typescript"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (statement_block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function
+        body: (_) @body))) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name
+    body: (statement_block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (member_expression property: (property_identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "rust"
+extensions = ["rs"]
+repo = "https://github.com/tree-sitter/tree-sitter-rust"
+branch = "master"
+symbol = "tree_sitter_rust"
+definition_query = """
+(
+  (line_comment)* @doc
+  .
+  (function_item
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (scoped_identifier name: (identifier) @name)
+    (field_expression field: (field_identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "javascript"
+extensions = ["js", "mjs", "cjs"]
+repo = "https://github.com/tree-sitter/tree-sitter-javascript"
+branch = "master"
+symbol = "tree_sitter_javascript"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (statement_block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function
+        body: (_) @body))) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name
+    body: (statement_block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (member_expression property: (property_identifier) @name)
+  ]) @reference.call
+"""
+
+[[language]]
+name = "java"
+extensions = ["java"]
+repo = "https://github.com/tree-sitter/tree-sitter-java"
+branch = "master"
+symbol = "tree_sitter_java"
+definition_query = """
+(class_body
+  (block_comment) @doc
+  .
+  (method_declaration
+    name: (identifier) @name
+    body: (_) @body) @method.definition
+)
+(class_body
+  (block_comment) @doc
+  .
+  (constructor_declaration
+    name: (identifier) @name
+    body: (_) @body) @method.definition
+)
+(method_declaration
+  name: (identifier) @name
+  body: (_) @body) @method.definition
+(constructor_declaration
+  name: (identifier) @name
+  body: (_) @body) @method.definition
+"""
+call_query = """
+(method_invocation
+  name: (identifier) @name) @reference.call
+(object_creation_expression
+  type: (type_identifier) @name) @reference.call
+"""
+
+[[language]]
+name = "scala"
+extensions = ["scala", "sc"]
+repo = "https://github.com/tree-sitter/tree-sitter-scala"
+branch = "master"
+symbol = "tree_sitter_scala"
+definition_query = """
+(
+  (block_comment)* @doc
+  .
+  (function_definition
+    name: (identifier) @name
+    body: (_) @body) @function.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name) @function.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (class_definition
+    name: (identifier) @name
+    body: (template_body) @body) @class.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (object_definition
+    name: (identifier) @name
+    body: (template_body) @body) @object.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (trait_definition
+    name: (identifier) @name
+    body: (template_body) @body) @trait.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (field_expression field: (identifier) @name)
+  ]) @reference.call
+"""

@@ -33,6 +33,7 @@ url = "2.5"
 git2 = "0.18"
 mockito = "1.4"
 num-format = { version = "0.4.4" }
+which = "8.0.0"
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }

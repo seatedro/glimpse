@@ -75,6 +75,7 @@
               pkg-config
               openssl
               cacert
+              tree-sitter
             ]
             ++ lib.optionals stdenv.isDarwin [
               darwin.apple_sdk.frameworks.Security
