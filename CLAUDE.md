@@ -39,6 +39,14 @@ glimpse/
 └── test_project/         # Test fixtures
 ```
 
+## Development Environment
+
+Always use the devshell from the flake for all commands:
+
+```bash
+nix develop
+```
+
 ## Development Commands
 
 ```bash
