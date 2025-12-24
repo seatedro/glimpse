@@ -1,4 +1,4 @@
-# CLAUDE.md - AI Assistant Guide for Glimpse
+# AGENTS.md - AI Agent Guide for Glimpse
 
 ## Project Overview
 
