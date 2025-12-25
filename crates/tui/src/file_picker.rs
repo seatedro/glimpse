@@ -1,3 +1,9 @@
+use std::{
+    io::{self, stdout},
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -11,11 +17,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
-};
-use std::{
-    io::{self, stdout},
-    path::{Path, PathBuf},
-    time::Duration,
 };
 
 struct TerminalGuard;
@@ -121,15 +122,14 @@ impl FilePicker {
             .direction(Direction::Vertical)
             .constraints(
                 [
-                    Constraint::Length(1),      // Current folder
-                    Constraint::Percentage(80), // File list
-                    Constraint::Percentage(20), // Selected files
+                    Constraint::Length(1),
+                    Constraint::Percentage(80),
+                    Constraint::Percentage(20),
                 ]
                 .as_ref(),
             )
             .split(f.area());
 
-        // Current folder
         let current_path = self.get_relative_path(&self.current_dir);
         let folder = Paragraph::new(format!("📁 {}", current_path.display())).block(
             Block::default()
@@ -139,7 +139,6 @@ impl FilePicker {
 
         f.render_widget(folder, chunks[0]);
 
-        // File list
         let items: Vec<ListItem> = self
             .files
             .iter()
@@ -164,7 +163,6 @@ impl FilePicker {
 
         f.render_stateful_widget(list, chunks[1], &mut self.list_state.clone());
 
-        // Selected files
         let selected_items: Vec<ListItem> = self
             .selected_files
             .iter()
@@ -205,7 +203,6 @@ impl FilePicker {
             let entry = entry?;
             let path = entry.path();
 
-            // skip hidden files if not showing them
             if !self.show_hidden
                 && path
                     .file_name()
@@ -214,7 +211,6 @@ impl FilePicker {
                 continue;
             }
 
-            // skip ignored files if respecting ignore
             if self.respect_ignore {
                 let path_clone = path.clone();
                 let mut builder = ignore::gitignore::GitignoreBuilder::new(path_clone);
@@ -227,7 +223,6 @@ impl FilePicker {
                 }
             }
 
-            // skip files larger than max size
             if path.is_file() && entry.metadata()?.len() > self.max_size {
                 continue;
             }
@@ -235,7 +230,6 @@ impl FilePicker {
             files.push(path);
         }
 
-        // sort directories first, then files
         files.sort_by(|a, b| {
             if a.is_dir() && !b.is_dir() {
                 std::cmp::Ordering::Less
@@ -309,7 +303,6 @@ impl FilePicker {
         if let Some(selected) = self.selected_list_state.selected() {
             if selected < self.selected_files.len() {
                 self.selected_files.remove(selected);
-                // Adjust the selection after removal
                 if self.selected_files.is_empty() {
                     self.selected_list_state.select(None);
                 } else {
@@ -342,7 +335,6 @@ impl FilePicker {
             }
         }
 
-        // If this was previously empty, move the buffer cursor to the first item
         if before == 0 && !self.selected_files.is_empty() {
             self.selected_list_state.select(Some(0));
         }

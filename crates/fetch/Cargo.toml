@@ -1,0 +1,17 @@
+[package]
+name = "glimpse-fetch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glimpse-core.workspace = true
+
+anyhow.workspace = true
+arboard.workspace = true
+git2.workspace = true
+indicatif.workspace = true
+reqwest.workspace = true
+scraper.workspace = true
+tempfile.workspace = true
+url.workspace = true

@@ -1,23 +1,19 @@
 mod analyzer;
 mod cli;
-mod config;
-mod file_picker;
-mod git_processor;
 mod output;
-mod source_detection;
-mod tokenizer;
-mod url_processor;
 
-use crate::analyzer::process_directory;
-use crate::cli::Cli;
-use crate::config::{
-    get_config_path, load_config, load_repo_config, save_config, save_repo_config, RepoConfig,
-};
-use crate::git_processor::GitProcessor;
-use crate::url_processor::UrlProcessor;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use glimpse_core::{
+    get_config_path, load_config, load_repo_config, save_config, save_repo_config,
+    BackwardsCompatOutputFormat, RepoConfig,
+};
+use glimpse_fetch::{GitProcessor, UrlProcessor};
+
+use crate::analyzer::process_directory;
+use crate::cli::Cli;
 
 fn is_url_or_git(path: &str) -> bool {
     GitProcessor::is_git_url(path) || path.starts_with("http://") || path.starts_with("https://")
@@ -62,7 +58,6 @@ fn main() -> anyhow::Result<()> {
             save_repo_config(&glimpse_file, &repo_config)?;
             println!("Configuration saved to {}", glimpse_file.display());
 
-            // If the user explicitly saved a config, remove this directory from the skipped list
             if let Ok(canonical_root) = std::fs::canonicalize(&root_dir) {
                 let root_str = canonical_root.to_string_lossy().to_string();
                 if let Some(pos) = config
@@ -79,7 +74,6 @@ fn main() -> anyhow::Result<()> {
             let repo_config = load_repo_config(&glimpse_file)?;
             apply_repo_config(&mut args, &repo_config);
         } else if has_custom_options(&args) {
-            // Determine canonical root directory path for consistent tracking
             let canonical_root = std::fs::canonicalize(&root_dir).unwrap_or(root_dir.clone());
             let root_str = canonical_root.to_string_lossy().to_string();
 
@@ -96,7 +90,6 @@ fn main() -> anyhow::Result<()> {
                     save_repo_config(&glimpse_file, &repo_config)?;
                     println!("Configuration saved to {}", glimpse_file.display());
 
-                    // In case it was previously skipped, remove from skipped list
                     if let Some(pos) = config
                         .skipped_prompt_repos
                         .iter()
@@ -106,7 +99,6 @@ fn main() -> anyhow::Result<()> {
                         save_config(&config)?;
                     }
                 } else {
-                    // Record that user declined for this project
                     config.skipped_prompt_repos.push(root_str);
                     save_config(&config)?;
                 }
@@ -139,15 +131,12 @@ fn main() -> anyhow::Result<()> {
             }
 
             let process_args = if subpaths.is_empty() {
-                // No subpaths specified, process the whole repo
                 args.with_path(repo_path.to_str().unwrap())
             } else {
-                // Process only the specified subpaths inside the repo
                 let mut new_args = args.clone();
                 new_args.paths = subpaths
                     .iter()
                     .map(|sub| {
-                        // Join with repo_path
                         let mut joined = std::path::PathBuf::from(&repo_path);
                         joined.push(sub);
                         joined.to_string_lossy().to_string()
@@ -170,7 +159,6 @@ fn main() -> anyhow::Result<()> {
             } else if args.print {
                 println!("{content}");
             } else {
-                // Default behavior for URLs if no -f or --print: copy to clipboard
                 match arboard::Clipboard::new()
                     .and_then(|mut clipboard| clipboard.set_text(content))
                 {
@@ -196,14 +184,12 @@ fn find_containing_dir_with_glimpse(path: &Path) -> anyhow::Result<PathBuf> {
         path.to_path_buf()
     };
 
-    // Try to find a .glimpse file or go up until we reach the root
     loop {
         if current.join(".glimpse").exists() {
             return Ok(current);
         }
 
         if !current.pop() {
-            // If we can't go up anymore, just use the original path
             return Ok(if path.is_file() {
                 path.parent().unwrap_or(Path::new(".")).to_path_buf()
             } else {
@@ -214,14 +200,14 @@ fn find_containing_dir_with_glimpse(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn create_repo_config_from_args(args: &Cli) -> RepoConfig {
-    use crate::config::BackwardsCompatOutputFormat;
-
     RepoConfig {
         include: args.include.clone(),
         exclude: args.exclude.clone(),
         max_size: args.max_size,
         max_depth: args.max_depth,
-        output: args.output.clone().map(BackwardsCompatOutputFormat::from),
+        output: args
+            .get_output_format()
+            .map(BackwardsCompatOutputFormat::from),
         file: args.file.clone(),
         hidden: Some(args.hidden),
         no_ignore: Some(args.no_ignore),
@@ -246,7 +232,8 @@ fn apply_repo_config(args: &mut Cli, repo_config: &RepoConfig) {
     }
 
     if let Some(ref output) = repo_config.output {
-        args.output = Some((*output).clone().into());
+        let output_format: glimpse_core::OutputFormat = (*output).clone().into();
+        args.output = Some(output_format.into());
     }
 
     if let Some(ref file) = repo_config.file {

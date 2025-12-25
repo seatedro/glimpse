@@ -1,0 +1,22 @@
+[package]
+name = "glimpse-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+once_cell.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+tiktoken-rs.workspace = true
+tokenizers.workspace = true
+toml.workspace = true
+
+[build-dependencies]
+serde = { version = "1.0.217", features = ["derive"] }
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true

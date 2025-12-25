@@ -1,27 +1,58 @@
-use crate::config::Config;
-use clap::{Parser, ValueEnum};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use clap::{Parser, ValueEnum};
+use serde::{Deserialize, Serialize};
+
+use glimpse_core::{BackwardsCompatOutputFormat, Config, Exclude, OutputFormat, TokenizerType};
+
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
-pub enum OutputFormat {
+pub enum CliOutputFormat {
     Tree,
     Files,
     Both,
 }
 
+impl From<CliOutputFormat> for OutputFormat {
+    fn from(format: CliOutputFormat) -> Self {
+        match format {
+            CliOutputFormat::Tree => OutputFormat::Tree,
+            CliOutputFormat::Files => OutputFormat::Files,
+            CliOutputFormat::Both => OutputFormat::Both,
+        }
+    }
+}
+
+impl From<OutputFormat> for CliOutputFormat {
+    fn from(format: OutputFormat) -> Self {
+        match format {
+            OutputFormat::Tree => CliOutputFormat::Tree,
+            OutputFormat::Files => CliOutputFormat::Files,
+            OutputFormat::Both => CliOutputFormat::Both,
+        }
+    }
+}
+
+impl From<BackwardsCompatOutputFormat> for CliOutputFormat {
+    fn from(format: BackwardsCompatOutputFormat) -> Self {
+        let output_format: OutputFormat = format.into();
+        output_format.into()
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum)]
-pub enum TokenizerType {
+pub enum CliTokenizerType {
     Tiktoken,
     #[clap(name = "huggingface")]
     HuggingFace,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Exclude {
-    File(PathBuf),
-    Pattern(String),
+impl From<CliTokenizerType> for TokenizerType {
+    fn from(t: CliTokenizerType) -> Self {
+        match t {
+            CliTokenizerType::Tiktoken => TokenizerType::Tiktoken,
+            CliTokenizerType::HuggingFace => TokenizerType::HuggingFace,
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -31,95 +62,72 @@ pub enum Exclude {
     version
 )]
 pub struct Cli {
-    /// Files or directories to analyze (multiple allowed), or a single URL/git repository
     #[arg(default_value = ".")]
     pub paths: Vec<String>,
 
-    /// Print the config file path and exit
     #[arg(long)]
     pub config_path: bool,
 
-    /// Additional patterns to include (e.g. "*.rs,*.go") - adds to source file detection
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
 
-    /// Only include files matching these patterns (e.g. "*.yml,*.toml") - replaces source file detection
     #[arg(long, value_delimiter = ',')]
     pub only_include: Option<Vec<String>>,
 
-    /// Additional patterns to exclude
     #[arg(short, long, value_parser = parse_exclude, value_delimiter = ',')]
     pub exclude: Option<Vec<Exclude>>,
 
-    /// Maximum file size in bytes
     #[arg(short, long)]
     pub max_size: Option<u64>,
 
-    /// Maximum directory depth
     #[arg(long)]
     pub max_depth: Option<usize>,
 
-    /// Output format (tree, files, or both)
     #[arg(short, long, value_enum)]
-    pub output: Option<OutputFormat>,
+    pub output: Option<CliOutputFormat>,
 
-    /// Output file path (optional)
     #[arg(short = 'f', long, num_args = 0..=1, default_missing_value = "GLIMPSE.md")]
     pub file: Option<PathBuf>,
 
-    /// Init glimpse config file
     #[arg(long, default_value_t = false)]
     pub config: bool,
 
-    /// Print to stdout instead
     #[arg(short, long)]
     pub print: bool,
 
-    /// Number of threads for parallel processing
     #[arg(short, long)]
     pub threads: Option<usize>,
 
-    /// Show hidden files and directories
     #[arg(short = 'H', long)]
     pub hidden: bool,
 
-    /// Don't respect .gitignore files
     #[arg(long)]
     pub no_ignore: bool,
 
-    /// Ignore Token Count
     #[arg(long)]
     pub no_tokens: bool,
 
-    /// Tokenizer to use (tiktoken or huggingface)
     #[arg(long, value_enum)]
-    pub tokenizer: Option<TokenizerType>,
+    pub tokenizer: Option<CliTokenizerType>,
 
-    /// Model to use for HuggingFace tokenizer
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Path to local tokenizer file
     #[arg(long)]
     pub tokenizer_file: Option<PathBuf>,
 
-    /// Interactive mode
     #[arg(long)]
     pub interactive: bool,
 
-    /// Output as Pdf
     #[arg(long)]
     pub pdf: Option<PathBuf>,
 
-    /// Traverse sublinks when processing URLs
     #[arg(long)]
     pub traverse_links: bool,
 
-    /// Maximum depth to traverse sublinks (default: 1)
     #[arg(long)]
     pub link_depth: Option<usize>,
 
-    /// Output in XML format for better LLM compatibility
     #[arg(short = 'x', long)]
     pub xml: bool,
 }
@@ -128,14 +136,11 @@ impl Cli {
     pub fn parse_with_config(config: &Config) -> anyhow::Result<Self> {
         let mut cli = Self::parse();
 
-        // Apply config defaults if CLI args aren't specified
         cli.max_size = cli.max_size.or(Some(config.max_size));
         cli.max_depth = cli.max_depth.or(Some(config.max_depth));
-        cli.output = cli.output.or(Some(OutputFormat::from(
-            config.default_output_format.clone(),
-        )));
+        let output_format: OutputFormat = config.default_output_format.clone().into();
+        cli.output = cli.output.or(Some(CliOutputFormat::from(output_format)));
 
-        // Merge excludes from config and CLI
         if let Some(mut excludes) = cli.exclude.take() {
             excludes.extend(config.default_excludes.clone());
             cli.exclude = Some(excludes);
@@ -143,19 +148,17 @@ impl Cli {
             cli.exclude = Some(config.default_excludes.clone());
         }
 
-        // Set default tokenizer if none specified but token counting is enabled
         if !cli.no_tokens && cli.tokenizer.is_none() {
             cli.tokenizer = Some(match config.default_tokenizer.as_str() {
-                "huggingface" => TokenizerType::HuggingFace,
-                _ => TokenizerType::Tiktoken,
+                "huggingface" => CliTokenizerType::HuggingFace,
+                _ => CliTokenizerType::Tiktoken,
             });
         }
 
-        // Set default model for HuggingFace if none specified
         if cli
             .tokenizer
             .as_ref()
-            .is_some_and(|t| matches!(t, TokenizerType::HuggingFace))
+            .is_some_and(|t| matches!(t, CliTokenizerType::HuggingFace))
             && cli.model.is_none()
             && cli.tokenizer_file.is_none()
         {
@@ -172,7 +175,6 @@ impl Cli {
     }
 
     pub fn validate_args(&self, is_url: bool) -> anyhow::Result<()> {
-        // Validate that both include and only_include are not used together
         if self.include.is_some() && self.only_include.is_some() {
             return Err(anyhow::anyhow!(
                 "Cannot use both --include and --only-include flags together. Use --include for additive behavior (add to source files) or --only-include for replacement behavior (only specified patterns)."
@@ -194,6 +196,14 @@ impl Cli {
             }
         }
         Ok(())
+    }
+
+    pub fn get_output_format(&self) -> Option<OutputFormat> {
+        self.output.clone().map(|f| f.into())
+    }
+
+    pub fn get_tokenizer_type(&self) -> Option<TokenizerType> {
+        self.tokenizer.clone().map(|t| t.into())
     }
 }
 

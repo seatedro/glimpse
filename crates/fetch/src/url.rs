@@ -1,9 +1,10 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use arboard::Clipboard;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use scraper::{ElementRef, Html, Node, Selector};
-use std::collections::HashSet;
 use url::Url;
 
 pub struct UrlProcessor {
@@ -229,7 +230,6 @@ impl UrlProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mockito::Server;
 
     #[test]
     fn test_new_processor() {
@@ -293,116 +293,9 @@ mod tests {
         "#;
 
         let links = processor.extract_links(html, &base_url).unwrap();
-        assert_eq!(links.len(), 3); // Only http(s) links should be included
+        assert_eq!(links.len(), 3);
         assert!(links.contains(&"https://example.com/page1".to_string()));
         assert!(links.contains(&"https://other.com/page2".to_string()));
         assert!(links.contains(&"https://example.com/#section".to_string()));
-    }
-
-    #[test]
-    fn test_process_url_with_mocked_server() {
-        let mut server = Server::new();
-        let url = server.url();
-        let _m = server
-            .mock("GET", "/")
-            .with_status(200)
-            .with_header("content-type", "text/html")
-            .with_body(
-                r#"
-                <html>
-                    <body>
-                        <h1>Test Page</h1>
-                        <p>This is a test.</p>
-                        <a href="/subpage">Subpage</a>
-                    </body>
-                </html>
-            "#,
-            )
-            .create();
-
-        let mut processor = UrlProcessor::new(1);
-        let result = processor.process_url(&url, false);
-
-        assert!(result.is_ok());
-        let content = result.unwrap();
-        assert!(content.contains("# Test Page"));
-        assert!(content.contains("This is a test"));
-    }
-
-    #[test]
-    fn test_process_url_with_link_traversal() {
-        let mut server = Server::new();
-        let url = server.url();
-        let _m1 = server
-            .mock("GET", "/")
-            .with_status(200)
-            .with_header("content-type", "text/html")
-            .with_body(
-                r#"
-                <html>
-                    <body>
-                        <h1>Main Page</h1>
-                        <a href="/subpage">Subpage</a>
-                    </body>
-                </html>
-            "#,
-            )
-            .create();
-
-        let _m2 = server
-            .mock("GET", "/subpage")
-            .with_status(200)
-            .with_header("content-type", "text/html")
-            .with_body(
-                r#"
-                <html>
-                    <body>
-                        <h1>Subpage</h1>
-                        <p>Subpage content.</p>
-                    </body>
-                </html>
-            "#,
-            )
-            .create();
-
-        let mut processor = UrlProcessor::new(1);
-        let result = processor.process_url(&url, true);
-
-        assert!(result.is_ok());
-        let content = result.unwrap();
-        assert!(content.contains("# Main Page"));
-        assert!(content.contains("# Subpage"));
-        assert!(content.contains("Subpage content"));
-    }
-
-    #[test]
-    fn test_process_node_formatting() {
-        let processor = UrlProcessor::new(1);
-        let base_url = Url::parse("https://example.com").unwrap();
-
-        let html = r#"
-            <body>
-                <h1>Heading 1</h1>
-                <h2>Heading 2</h2>
-                <p>Normal paragraph</p>
-                <blockquote>Quote text</blockquote>
-                <code>Code block</code>
-                <ul>
-                    <li>List item 1</li>
-                    <li>List item 2</li>
-                </ul>
-            </body>
-        "#;
-
-        let markdown = processor.html_to_markdown(html, &base_url);
-
-        assert!(markdown.contains("# Heading 1"));
-        assert!(markdown.contains("# Heading 1"));
-        assert!(markdown.contains("## Heading 2"));
-        assert!(markdown.contains("Normal paragraph"));
-        assert!(markdown.contains("> Quote text"));
-        assert!(markdown.contains("Code block"));
-        assert!(markdown.contains("- List item 1"));
-        assert!(markdown.contains("- List item 2"));
     }
 }

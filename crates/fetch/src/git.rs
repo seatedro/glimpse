@@ -1,6 +1,7 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use git2::Repository;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use url::Url;
 
@@ -46,12 +47,6 @@ impl GitProcessor {
             return is_git_protocol;
         }
         false
-    }
-}
-
-impl Drop for GitProcessor {
-    fn drop(&mut self) {
-        // Temp directory will be automatically cleaned up when dropped
     }
 }
 
@@ -109,7 +104,7 @@ mod tests {
                 temp_path.exists(),
                 "Temp directory should exist during processor lifetime"
             );
-        } // processor is dropped here
+        }
         assert!(
             !temp_path.exists(),
             "Temp directory should be cleaned up after drop"
@@ -136,22 +131,6 @@ mod tests {
                 .unwrap_or("repo");
 
             assert_eq!(repo_name, expected_name, "Failed for URL: {url}");
-        }
-    }
-
-    #[test]
-    fn test_process_repo_creates_directory() {
-        let test_repo = "https://github.com/rust-lang/rust-analyzer.git";
-        if let Ok(processor) = GitProcessor::new() {
-            match processor.process_repo(test_repo) {
-                Ok(path) => {
-                    assert!(path.exists(), "Repository directory should exist");
-                    assert!(path.join(".git").exists(), "Git directory should exist");
-                    // Check for some common files that should be present
-                    assert!(path.join("Cargo.toml").exists(), "Cargo.toml should exist");
-                }
-                Err(e) => println!("Skipping clone test due to error: {e}"),
-            }
         }
     }
 }

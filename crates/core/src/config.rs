@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cli::{Exclude, OutputFormat};
+use crate::types::{Exclude, OutputFormat};
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(into = "String")]
@@ -37,7 +37,7 @@ impl<'de> Deserialize<'de> for BackwardsCompatOutputFormat {
                     "tree" => OutputFormat::Tree,
                     "files" => OutputFormat::Files,
                     "both" => OutputFormat::Both,
-                    _ => OutputFormat::Both, // Default to Both for unknown values
+                    _ => OutputFormat::Both,
                 };
                 Ok(BackwardsCompatOutputFormat(format))
             }
@@ -83,9 +83,6 @@ pub struct Config {
     #[serde(default)]
     pub traverse_links: bool,
 
-    /// List of canonical project directories for which the user has already declined to
-    /// save a local `.glimpse` configuration file. When a directory is present in this
-    /// list Glimpse will not prompt the user again.
     #[serde(default)]
     pub skipped_prompt_repos: Vec<String>,
 }
@@ -128,11 +125,9 @@ fn default_output_format() -> BackwardsCompatOutputFormat {
 
 fn default_excludes() -> Vec<Exclude> {
     vec![
-        // Version control
         Exclude::Pattern("**/.git/**".to_string()),
         Exclude::Pattern("**/.svn/**".to_string()),
         Exclude::Pattern("**/.hg/**".to_string()),
-        // Build artifacts and dependencies
         Exclude::Pattern("**/target/**".to_string()),
         Exclude::Pattern("**/node_modules/**".to_string()),
         Exclude::Pattern("**/dist/**".to_string()),
@@ -175,7 +170,6 @@ pub fn get_config_path() -> anyhow::Result<PathBuf> {
         }
     }
 
-    // Fall back to platform-specific directory
     let config_dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?
         .join("glimpse");
@@ -210,7 +204,6 @@ pub fn load_repo_config(path: &Path) -> anyhow::Result<RepoConfig> {
     }
 }
 
-/// Persist the provided global configuration to disk, overriding any existing config file.
 pub fn save_config(config: &Config) -> anyhow::Result<()> {
     let config_path = get_config_path()?;
 

@@ -19,22 +19,29 @@ struct Language {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=languages.yml");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let languages_path = Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("languages.yml");
 
-    // Read and parse languages.yml
+    println!(
+        "cargo:rerun-if-changed={}",
+        languages_path.to_string_lossy()
+    );
+
     let yaml_content =
-        std::fs::read_to_string("languages.yml").expect("Failed to read languages.yml");
+        std::fs::read_to_string(&languages_path).expect("Failed to read languages.yml");
     let languages: HashMap<String, Language> =
         serde_yaml::from_str(&yaml_content).expect("Failed to parse languages.yml");
 
-    // Generate the rust code
     let mut code = String::new();
 
-    // Add the use statements
     code.push_str("use once_cell::sync::Lazy;\n");
     code.push_str("use std::collections::HashSet;\n\n");
 
-    // Generate source extensions set
     code.push_str("pub static SOURCE_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
@@ -48,7 +55,6 @@ fn main() {
     code.push_str("    set\n");
     code.push_str("});\n\n");
 
-    // Generate filename mappings
     code.push_str("pub static KNOWN_FILENAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
@@ -61,7 +67,6 @@ fn main() {
     code.push_str("    set\n");
     code.push_str("});\n\n");
 
-    // Generate interpreter mappings
     code.push_str("pub static INTERPRETER_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {\n");
     code.push_str("    let mut set = HashSet::new();\n\n");
 
@@ -74,7 +79,6 @@ fn main() {
     code.push_str("    set\n");
     code.push_str("});\n");
 
-    // Write the generated code to file
     let out_dir = std::env::var_os("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("languages.rs");
     let mut f = File::create(dest_path).unwrap();
