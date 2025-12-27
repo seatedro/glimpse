@@ -967,9 +967,12 @@ dependencies = [
  "git2",
  "glimpse-core",
  "glimpse-fetch",
+ "glob",
  "libloading",
  "once_cell",
+ "regex",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "tree-sitter",
@@ -1020,6 +1023,12 @@ dependencies = [
  "printpdf",
  "ratatui",
 ]
+
+[[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "globset"
