@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
-use super::index::Index;
-use super::schema::Definition;
+use super::index::{Definition, Index};
 
 pub type NodeId = usize;
 
