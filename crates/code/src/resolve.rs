@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -719,6 +721,7 @@ pub struct Resolver<'a> {
     index: &'a Index,
     workspace: Option<Box<dyn WorkspaceDiscovery>>,
     root: PathBuf,
+    discovered_files: RefCell<HashSet<PathBuf>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -731,6 +734,7 @@ impl<'a> Resolver<'a> {
             index,
             workspace,
             root,
+            discovered_files: RefCell::new(HashSet::new()),
         }
     }
 
@@ -757,7 +761,20 @@ impl<'a> Resolver<'a> {
             return Ok(Some(def));
         }
 
-        resolve_by_search(callee, &self.root)
+        if let Some(def) = resolve_by_search(callee, &self.root)? {
+            self.discovered_files.borrow_mut().insert(def.file.clone());
+            return Ok(Some(def));
+        }
+
+        Ok(None)
+    }
+
+    pub fn files_to_index(&self) -> Vec<PathBuf> {
+        self.discovered_files.borrow().iter().cloned().collect()
+    }
+
+    pub fn clear_discovered(&self) {
+        self.discovered_files.borrow_mut().clear();
     }
 
     fn resolve_via_imports(&self, callee: &str, from_file: &Path) -> Option<Definition> {
@@ -1596,5 +1613,39 @@ version = "0.1.0"
 
         let found = resolve_by_search("nonexistent", dir.path()).unwrap();
         assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_resolver_tracks_discovered_files() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("utils.rs"),
+            "pub fn discovered_func() {}\n",
+        )
+        .unwrap();
+
+        fs::write(
+            dir.path().join("helpers.rs"),
+            "pub fn another_func() {}\n",
+        )
+        .unwrap();
+
+        let index = Index::new();
+        let resolver = Resolver::new(&index, None, dir.path().to_path_buf());
+
+        assert!(resolver.files_to_index().is_empty());
+
+        let _ = resolver.resolve("discovered_func", Path::new("main.rs"));
+        let files = resolver.files_to_index();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("utils.rs"));
+
+        let _ = resolver.resolve("another_func", Path::new("main.rs"));
+        let files = resolver.files_to_index();
+        assert_eq!(files.len(), 2);
+
+        resolver.clear_discovered();
+        assert!(resolver.files_to_index().is_empty());
     }
 }
