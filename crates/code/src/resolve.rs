@@ -616,62 +616,103 @@ pub fn resolve_by_index(callee: &str, index: &Index) -> Option<Definition> {
     index.definitions().find(|d| d.name == callee).cloned()
 }
 
+struct DefinitionPattern {
+    extensions: &'static [&'static str],
+    pattern: &'static str,
+}
+
+const DEFINITION_PATTERNS: &[DefinitionPattern] = &[
+    DefinitionPattern {
+        extensions: &["rs"],
+        pattern: r"fn\s+{NAME}\s*[<(]",
+    },
+    DefinitionPattern {
+        extensions: &["go"],
+        pattern: r"func\s+(\([^)]*\)\s*)?{NAME}\s*[\[<(]",
+    },
+    DefinitionPattern {
+        extensions: &["py"],
+        pattern: r"def\s+{NAME}\s*\(",
+    },
+    DefinitionPattern {
+        extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+        pattern: r"(function\s+{NAME}|const\s+{NAME}\s*=|let\s+{NAME}\s*=|{NAME}\s*\([^)]*\)\s*\{)",
+    },
+    DefinitionPattern {
+        extensions: &["java", "scala"],
+        pattern: r"(void|int|String|boolean|public|private|protected|static|def)\s+{NAME}\s*[<(]",
+    },
+    DefinitionPattern {
+        extensions: &["c", "cpp", "cc", "cxx", "h", "hpp"],
+        pattern: r"\b\w+[\s*]+{NAME}\s*\(",
+    },
+    DefinitionPattern {
+        extensions: &["zig"],
+        pattern: r"(fn|pub fn)\s+{NAME}\s*\(",
+    },
+    DefinitionPattern {
+        extensions: &["sh", "bash"],
+        pattern: r"(function\s+{NAME}|{NAME}\s*\(\s*\))",
+    },
+];
+
 pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>> {
-    let output = Command::new("rg")
-        .args([
-            "--json",
-            "-e",
-            &format!(r"fn\s+{}\s*[\(<]", regex::escape(callee)),
-            "--type",
-            "rust",
-            root.to_string_lossy().as_ref(),
-        ])
-        .output()
-        .context("failed to run ripgrep")?;
+    use std::io::{BufRead, BufReader};
 
-    if !output.status.success() {
-        return Ok(None);
-    }
+    let escaped = regex::escape(callee);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Ok(msg) = serde_json::from_str::<RgMessage>(line) {
-            if let RgMessage::Match { data } = msg {
-                return Ok(Some(Definition {
-                    name: callee.to_string(),
-                    kind: super::index::DefinitionKind::Function,
-                    span: super::index::Span {
-                        start_byte: 0,
-                        end_byte: 0,
-                        start_line: data.line_number.unwrap_or(1) as usize,
-                        end_line: data.line_number.unwrap_or(1) as usize,
-                    },
-                    file: PathBuf::from(&data.path.text),
-                }));
+    for pattern_def in DEFINITION_PATTERNS {
+        let pattern = pattern_def.pattern.replace("{NAME}", &escaped);
+
+        let re = match regex::Regex::new(&pattern) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for entry in walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+        {
+            let path = entry.path();
+
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+            if !pattern_def.extensions.contains(&ext) {
+                continue;
+            }
+
+            let file = match fs::File::open(path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+
+            let reader = BufReader::new(file);
+
+            for (line_num, line) in reader.lines().enumerate() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(_) => continue,
+                };
+
+                if re.is_match(&line) {
+                    return Ok(Some(Definition {
+                        name: callee.to_string(),
+                        kind: super::index::DefinitionKind::Function,
+                        span: super::index::Span {
+                            start_byte: 0,
+                            end_byte: 0,
+                            start_line: line_num + 1,
+                            end_line: line_num + 1,
+                        },
+                        file: path.to_path_buf(),
+                    }));
+                }
             }
         }
     }
 
     Ok(None)
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum RgMessage {
-    Match { data: RgMatchData },
-    #[serde(other)]
-    Other,
-}
-
-#[derive(Deserialize)]
-struct RgMatchData {
-    path: RgText,
-    line_number: Option<u64>,
-}
-
-#[derive(Deserialize)]
-struct RgText {
-    text: String,
 }
 
 pub struct Resolver<'a> {
@@ -1480,5 +1521,80 @@ version = "0.1.0"
 
         let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
         assert_eq!(ws.package_name(), "poetry-project");
+    }
+
+    #[test]
+    fn test_resolve_by_search_rust() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("lib.rs"),
+            "pub fn my_function() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+
+        let found = resolve_by_search("my_function", dir.path()).unwrap();
+        assert!(found.is_some());
+        let def = found.unwrap();
+        assert_eq!(def.name, "my_function");
+        assert_eq!(def.span.start_line, 1);
+    }
+
+    #[test]
+    fn test_resolve_by_search_python() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("utils.py"),
+            "def helper_func():\n    pass\n",
+        )
+        .unwrap();
+
+        let found = resolve_by_search("helper_func", dir.path()).unwrap();
+        assert!(found.is_some());
+        let def = found.unwrap();
+        assert_eq!(def.name, "helper_func");
+    }
+
+    #[test]
+    fn test_resolve_by_search_go() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc ProcessData() {\n}\n",
+        )
+        .unwrap();
+
+        let found = resolve_by_search("ProcessData", dir.path()).unwrap();
+        assert!(found.is_some());
+        let def = found.unwrap();
+        assert_eq!(def.name, "ProcessData");
+    }
+
+    #[test]
+    fn test_resolve_by_search_typescript() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("index.ts"),
+            "export function fetchData() {\n  return null;\n}\n",
+        )
+        .unwrap();
+
+        let found = resolve_by_search("fetchData", dir.path()).unwrap();
+        assert!(found.is_some());
+        let def = found.unwrap();
+        assert_eq!(def.name, "fetchData");
+    }
+
+    #[test]
+    fn test_resolve_by_search_not_found() {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(dir.path().join("lib.rs"), "pub fn other() {}\n").unwrap();
+
+        let found = resolve_by_search("nonexistent", dir.path()).unwrap();
+        assert!(found.is_none());
     }
 }
