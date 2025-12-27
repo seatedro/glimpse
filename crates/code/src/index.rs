@@ -1,10 +1,15 @@
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const INDEX_DIR: &str = ".glimpse-index";
+pub const INDEX_FILE: &str = "index.bin";
+pub const INDEX_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
@@ -71,23 +76,202 @@ impl Index {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
-            version: 1,
+            version: INDEX_VERSION,
         }
     }
 
-    pub fn is_stale(&self, _path: &PathBuf, _mtime: u64, _size: u64) -> bool {
-        todo!("check if file needs re-indexing")
+    pub fn is_stale(&self, path: &Path, mtime: u64, size: u64) -> bool {
+        match self.files.get(path) {
+            Some(record) => record.mtime != mtime || record.size != size,
+            None => true,
+        }
     }
 
-    pub fn update(&mut self, _record: FileRecord) -> Result<()> {
-        todo!("add or update file record")
+    pub fn update(&mut self, record: FileRecord) {
+        self.files.insert(record.path.clone(), record);
+    }
+
+    pub fn remove(&mut self, path: &Path) {
+        self.files.remove(path);
+    }
+
+    pub fn get(&self, path: &Path) -> Option<&FileRecord> {
+        self.files.get(path)
+    }
+
+    pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
+        self.files.values().flat_map(|f| &f.definitions)
+    }
+
+    pub fn calls(&self) -> impl Iterator<Item = &Call> {
+        self.files.values().flat_map(|f| &f.calls)
+    }
+
+    pub fn imports(&self) -> impl Iterator<Item = &Import> {
+        self.files.values().flat_map(|f| &f.imports)
     }
 }
 
-pub fn save_index(_index: &Index, _root: &Path) -> Result<()> {
-    todo!("serialize index with bincode")
+pub fn file_fingerprint(path: &Path) -> Result<(u64, u64)> {
+    let meta = fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let size = meta.len();
+    Ok((mtime, size))
 }
 
-pub fn load_index(_root: &Path) -> Result<Option<Index>> {
-    todo!("deserialize index from .glimpse-index/")
+pub fn index_path(root: &Path) -> PathBuf {
+    root.join(INDEX_DIR).join(INDEX_FILE)
+}
+
+pub fn save_index(index: &Index, root: &Path) -> Result<()> {
+    let dir = root.join(INDEX_DIR);
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let path = dir.join(INDEX_FILE);
+    let file = File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+    let writer = BufWriter::new(file);
+
+    bincode::serialize_into(writer, index).context("failed to serialize index")?;
+    Ok(())
+}
+
+pub fn load_index(root: &Path) -> Result<Option<Index>> {
+    let path = index_path(root);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file = File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+    let reader = BufReader::new(file);
+
+    let index: Index = bincode::deserialize_from(reader).context("failed to deserialize index")?;
+
+    if index.version != INDEX_VERSION {
+        return Ok(None);
+    }
+
+    Ok(Some(index))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_record(name: &str) -> FileRecord {
+        FileRecord {
+            path: PathBuf::from(format!("src/{}.rs", name)),
+            mtime: 1234567890,
+            size: 1024,
+            definitions: vec![Definition {
+                name: format!("{}_fn", name),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 100,
+                    start_line: 1,
+                    end_line: 10,
+                },
+                file: PathBuf::from(format!("src/{}.rs", name)),
+            }],
+            calls: vec![Call {
+                callee: "other_fn".to_string(),
+                span: Span {
+                    start_byte: 50,
+                    end_byte: 60,
+                    start_line: 5,
+                    end_line: 5,
+                },
+                file: PathBuf::from(format!("src/{}.rs", name)),
+                caller: Some(format!("{}_fn", name)),
+            }],
+            imports: vec![Import {
+                module_path: "std::fs".to_string(),
+                alias: None,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 15,
+                    start_line: 1,
+                    end_line: 1,
+                },
+                file: PathBuf::from(format!("src/{}.rs", name)),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_index_update_and_get() {
+        let mut index = Index::new();
+        let record = make_test_record("main");
+
+        index.update(record.clone());
+        let got = index.get(Path::new("src/main.rs")).unwrap();
+
+        assert_eq!(got.path, record.path);
+        assert_eq!(got.definitions.len(), 1);
+        assert_eq!(got.calls.len(), 1);
+        assert_eq!(got.imports.len(), 1);
+    }
+
+    #[test]
+    fn test_index_is_stale() {
+        let mut index = Index::new();
+        let record = make_test_record("lib");
+        index.update(record);
+
+        assert!(!index.is_stale(Path::new("src/lib.rs"), 1234567890, 1024));
+        assert!(index.is_stale(Path::new("src/lib.rs"), 1234567891, 1024));
+        assert!(index.is_stale(Path::new("src/lib.rs"), 1234567890, 2048));
+        assert!(index.is_stale(Path::new("src/other.rs"), 1234567890, 1024));
+    }
+
+    #[test]
+    fn test_index_remove() {
+        let mut index = Index::new();
+        index.update(make_test_record("foo"));
+        index.update(make_test_record("bar"));
+
+        assert!(index.get(Path::new("src/foo.rs")).is_some());
+        index.remove(Path::new("src/foo.rs"));
+        assert!(index.get(Path::new("src/foo.rs")).is_none());
+        assert!(index.get(Path::new("src/bar.rs")).is_some());
+    }
+
+    #[test]
+    fn test_index_iterators() {
+        let mut index = Index::new();
+        index.update(make_test_record("a"));
+        index.update(make_test_record("b"));
+
+        assert_eq!(index.definitions().count(), 2);
+        assert_eq!(index.calls().count(), 2);
+        assert_eq!(index.imports().count(), 2);
+    }
+
+    #[test]
+    fn test_save_and_load_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = Index::new();
+        index.update(make_test_record("main"));
+        index.update(make_test_record("lib"));
+
+        save_index(&index, dir.path()).unwrap();
+
+        let loaded = load_index(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.version, INDEX_VERSION);
+        assert_eq!(loaded.files.len(), 2);
+        assert!(loaded.get(Path::new("src/main.rs")).is_some());
+        assert!(loaded.get(Path::new("src/lib.rs")).is_some());
+    }
+
+    #[test]
+    fn test_load_index_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_index(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
 }
