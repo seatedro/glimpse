@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
 	"crates/cli",
+	"crates/code",
 	"crates/core",
 	"crates/fetch",
 	"crates/tui"
@@ -14,6 +15,7 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates
+glimpse-code = { path = "crates/code" }
 glimpse-core = { path = "crates/core" }
 glimpse-fetch = { path = "crates/fetch" }
 glimpse-tui = { path = "crates/tui" }
@@ -22,6 +24,12 @@ glimpse-tui = { path = "crates/tui" }
 anyhow = "1.0.95"
 serde = { version = "1.0.217", features = ["derive"] }
 rayon = "1.10.0"
+
+# Code analysis dependencies
+bincode = "1.3"
+cc = "1.2"
+libloading = "0.8"
+tree-sitter = "0.24"
 
 # Core dependencies
 dirs = "5.0.1"
