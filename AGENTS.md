@@ -9,6 +9,22 @@ Check `.todo.md` for current tasks and next steps. Keep it updated:
 - Add new tasks as they're discovered
 - Reference it before asking "what's next?"
 
+## Commits
+
+Use `jj` for version control. Always commit after completing a phase:
+
+```bash
+jj commit -m "feat: add glimpse-code crate scaffolding"
+```
+
+Use conventional commit prefixes:
+- `feat` - new feature
+- `fix` - bug fix
+- `refactor` - restructure without behavior change
+- `chore` - maintenance, dependencies, config
+- `docs` - documentation only
+- `test` - adding or updating tests
+
 ## Build Commands
 
 ```bash
