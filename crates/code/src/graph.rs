@@ -16,6 +16,7 @@ pub struct CallGraphNode {
 #[derive(Debug, Default)]
 pub struct CallGraph {
     pub nodes: HashMap<NodeId, CallGraphNode>,
+    #[allow(dead_code)]
     name_to_id: HashMap<String, NodeId>,
 }
 
