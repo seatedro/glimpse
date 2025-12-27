@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -7,7 +9,6 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const INDEX_DIR: &str = ".glimpse-index";
 pub const INDEX_FILE: &str = "index.bin";
 pub const INDEX_VERSION: u32 = 1;
 
@@ -124,15 +125,29 @@ pub fn file_fingerprint(path: &Path) -> Result<(u64, u64)> {
     Ok((mtime, size))
 }
 
-pub fn index_path(root: &Path) -> PathBuf {
-    root.join(INDEX_DIR).join(INDEX_FILE)
+fn hash_path(path: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn index_dir() -> Result<PathBuf> {
+    dirs::data_local_dir()
+        .map(|d| d.join("glimpse").join("indices"))
+        .context("could not determine local data directory")
+}
+
+pub fn index_path(root: &Path) -> Result<PathBuf> {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let hash = hash_path(&canonical);
+    Ok(index_dir()?.join(hash).join(INDEX_FILE))
 }
 
 pub fn save_index(index: &Index, root: &Path) -> Result<()> {
-    let dir = root.join(INDEX_DIR);
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    let path = index_path(root)?;
+    let dir = path.parent().unwrap();
+    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
-    let path = dir.join(INDEX_FILE);
     let file = File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
     let writer = BufWriter::new(file);
 
@@ -141,7 +156,7 @@ pub fn save_index(index: &Index, root: &Path) -> Result<()> {
 }
 
 pub fn load_index(root: &Path) -> Result<Option<Index>> {
-    let path = index_path(root);
+    let path = index_path(root)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -149,13 +164,26 @@ pub fn load_index(root: &Path) -> Result<Option<Index>> {
     let file = File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = BufReader::new(file);
 
-    let index: Index = bincode::deserialize_from(reader).context("failed to deserialize index")?;
+    let index: Index = match bincode::deserialize_from(reader) {
+        Ok(idx) => idx,
+        Err(_) => return Ok(None),
+    };
 
     if index.version != INDEX_VERSION {
         return Ok(None);
     }
 
     Ok(Some(index))
+}
+
+pub fn clear_index(root: &Path) -> Result<()> {
+    let path = index_path(root)?;
+    if let Some(dir) = path.parent() {
+        if dir.exists() {
+            fs::remove_dir_all(dir).with_context(|| format!("failed to remove {}", dir.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -253,19 +281,36 @@ mod tests {
     }
 
     #[test]
+    fn test_index_path_uses_data_dir() {
+        let path = index_path(Path::new("/some/project")).unwrap();
+        let data_dir = dirs::data_local_dir().unwrap();
+        assert!(path.starts_with(data_dir.join("glimpse").join("indices")));
+        assert!(path.ends_with(INDEX_FILE));
+    }
+
+    #[test]
+    fn test_index_path_different_projects() {
+        let path1 = index_path(Path::new("/project/a")).unwrap();
+        let path2 = index_path(Path::new("/project/b")).unwrap();
+        assert_ne!(path1, path2);
+    }
+
+    #[test]
     fn test_save_and_load_index() {
-        let dir = tempfile::tempdir().unwrap();
+        let project_dir = tempfile::tempdir().unwrap();
         let mut index = Index::new();
         index.update(make_test_record("main"));
         index.update(make_test_record("lib"));
 
-        save_index(&index, dir.path()).unwrap();
+        save_index(&index, project_dir.path()).unwrap();
 
-        let loaded = load_index(dir.path()).unwrap().unwrap();
+        let loaded = load_index(project_dir.path()).unwrap().unwrap();
         assert_eq!(loaded.version, INDEX_VERSION);
         assert_eq!(loaded.files.len(), 2);
         assert!(loaded.get(Path::new("src/main.rs")).is_some());
         assert!(loaded.get(Path::new("src/lib.rs")).is_some());
+
+        clear_index(project_dir.path()).unwrap();
     }
 
     #[test]
