@@ -103,8 +103,21 @@ impl WorkspaceDiscovery for RustWorkspace {
         }
 
         let member = self.members.iter().find(|m| m.name == crate_name)?;
+        let src_dir = member.path.join("src");
 
-        let mut path = member.path.join("src");
+        if parts.len() == 1 {
+            let lib_rs = src_dir.join("lib.rs");
+            if lib_rs.exists() {
+                return Some(lib_rs);
+            }
+            let main_rs = src_dir.join("main.rs");
+            if main_rs.exists() {
+                return Some(main_rs);
+            }
+            return None;
+        }
+
+        let mut path = src_dir;
         for part in &parts[1..] {
             path = path.join(part);
         }
@@ -138,6 +151,275 @@ impl RustWorkspace {
             .map(|m| &m.path)
     }
 }
+
+// =============================================================================
+// Go Workspace
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct GoWorkspace {
+    root: PathBuf,
+    module_path: String,
+}
+
+#[derive(Deserialize)]
+struct GoMod {
+    #[serde(rename = "Module")]
+    module: GoModule,
+}
+
+#[derive(Deserialize)]
+struct GoModule {
+    #[serde(rename = "Path")]
+    path: String,
+}
+
+impl WorkspaceDiscovery for GoWorkspace {
+    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
+        let go_mod_path = root.join("go.mod");
+        if !go_mod_path.exists() {
+            return Ok(None);
+        }
+
+        let output = Command::new("go")
+            .args(["mod", "edit", "-json"])
+            .current_dir(root)
+            .output()
+            .context("failed to run go mod edit -json")?;
+
+        if !output.status.success() {
+            let content = fs::read_to_string(&go_mod_path)?;
+            if let Some(module_path) = parse_go_mod_fallback(&content) {
+                return Ok(Some(Box::new(GoWorkspace {
+                    root: root.to_path_buf(),
+                    module_path,
+                })));
+            }
+            return Ok(None);
+        }
+
+        let go_mod: GoMod = serde_json::from_slice(&output.stdout)
+            .context("failed to parse go mod output")?;
+
+        Ok(Some(Box::new(GoWorkspace {
+            root: root.to_path_buf(),
+            module_path: go_mod.module.path,
+        })))
+    }
+
+    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
+        if !module_path.starts_with(&self.module_path) {
+            return None;
+        }
+
+        let relative = module_path
+            .strip_prefix(&self.module_path)?
+            .trim_start_matches('/');
+
+        if relative.is_empty() {
+            let main_go = self.root.join("main.go");
+            if main_go.exists() {
+                return Some(main_go);
+            }
+            for entry in fs::read_dir(&self.root).ok()? {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.extension().map(|e| e == "go").unwrap_or(false) {
+                    return Some(path);
+                }
+            }
+            return None;
+        }
+
+        let pkg_dir = self.root.join(relative);
+        if pkg_dir.is_dir() {
+            for entry in fs::read_dir(&pkg_dir).ok()? {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.extension().map(|e| e == "go").unwrap_or(false)
+                    && !path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().ends_with("_test.go"))
+                        .unwrap_or(false)
+                {
+                    return Some(path);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl GoWorkspace {
+    pub fn module_path(&self) -> &str {
+        &self.module_path
+    }
+}
+
+fn parse_go_mod_fallback(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("module ") {
+            return Some(line.strip_prefix("module ")?.trim().to_string());
+        }
+    }
+    None
+}
+
+// =============================================================================
+// TypeScript/JavaScript Workspace
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub struct TsWorkspace {
+    root: PathBuf,
+    name: String,
+    paths: Vec<(String, PathBuf)>,
+}
+
+#[derive(Deserialize)]
+struct PackageJson {
+    name: Option<String>,
+    #[allow(dead_code)]
+    workspaces: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct TsConfig {
+    #[serde(rename = "compilerOptions")]
+    compiler_options: Option<TsCompilerOptions>,
+}
+
+#[derive(Deserialize)]
+struct TsCompilerOptions {
+    paths: Option<std::collections::HashMap<String, Vec<String>>>,
+    #[serde(rename = "baseUrl")]
+    base_url: Option<String>,
+}
+
+impl WorkspaceDiscovery for TsWorkspace {
+    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
+        let pkg_json_path = root.join("package.json");
+        if !pkg_json_path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&pkg_json_path)
+            .with_context(|| format!("failed to read {}", pkg_json_path.display()))?;
+
+        let pkg: PackageJson =
+            serde_json::from_str(&content).with_context(|| "failed to parse package.json")?;
+
+        let name = pkg.name.unwrap_or_else(|| {
+            root.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+
+        let mut paths = Vec::new();
+
+        let tsconfig_path = root.join("tsconfig.json");
+        if tsconfig_path.exists() {
+            if let Ok(ts_content) = fs::read_to_string(&tsconfig_path) {
+                if let Ok(tsconfig) = serde_json::from_str::<TsConfig>(&ts_content) {
+                    if let Some(opts) = tsconfig.compiler_options {
+                        let base = opts
+                            .base_url
+                            .map(|b| root.join(b))
+                            .unwrap_or_else(|| root.to_path_buf());
+
+                        if let Some(path_map) = opts.paths {
+                            for (alias, targets) in path_map {
+                                if let Some(target) = targets.first() {
+                                    let clean_alias = alias.trim_end_matches("/*");
+                                    let clean_target = target.trim_end_matches("/*");
+                                    paths.push((clean_alias.to_string(), base.join(clean_target)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Some(Box::new(TsWorkspace { root: root.to_path_buf(), name, paths })))
+    }
+
+    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
+        if module_path.starts_with('.') {
+            return None;
+        }
+
+        for (alias, target_dir) in &self.paths {
+            if module_path.starts_with(alias) {
+                let remainder = module_path.strip_prefix(alias)?.trim_start_matches('/');
+                let base = if remainder.is_empty() {
+                    target_dir.clone()
+                } else {
+                    target_dir.join(remainder)
+                };
+
+                for ext in &["ts", "tsx", "js", "jsx"] {
+                    let with_ext = base.with_extension(ext);
+                    if with_ext.exists() {
+                        return Some(with_ext);
+                    }
+                }
+
+                let index_path = base.join("index");
+                for ext in &["ts", "tsx", "js", "jsx"] {
+                    let with_ext = index_path.with_extension(ext);
+                    if with_ext.exists() {
+                        return Some(with_ext);
+                    }
+                }
+            }
+        }
+
+        let node_modules = self.root.join("node_modules").join(module_path);
+        if node_modules.exists() {
+            let pkg_json = node_modules.join("package.json");
+            if pkg_json.exists() {
+                if let Ok(content) = fs::read_to_string(&pkg_json) {
+                    if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(main) = pkg.get("main").and_then(|m| m.as_str()) {
+                            let main_path = node_modules.join(main);
+                            if main_path.exists() {
+                                return Some(main_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl TsWorkspace {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn paths(&self) -> &[(String, PathBuf)] {
+        &self.paths
+    }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
 
 fn expand_glob(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     let full_pattern = root.join(pattern);
@@ -389,5 +671,371 @@ version = "0.1.0"
         let dir = TempDir::new().unwrap();
         let ws = RustWorkspace::discover(dir.path()).unwrap();
         assert!(ws.is_none());
+    }
+
+    #[test]
+    fn test_resolve_module_finds_file() {
+        let dir = setup_rust_workspace();
+        let ws = RustWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("crate-a");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_resolve_same_file() {
+        use super::super::index::{Definition, DefinitionKind, FileRecord, Span};
+
+        let mut index = Index::new();
+        let file = PathBuf::from("src/main.rs");
+
+        index.update(FileRecord {
+            path: file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![
+                Definition {
+                    name: "foo".to_string(),
+                    kind: DefinitionKind::Function,
+                    span: Span {
+                        start_byte: 0,
+                        end_byte: 10,
+                        start_line: 1,
+                        end_line: 3,
+                    },
+                    file: file.clone(),
+                },
+                Definition {
+                    name: "bar".to_string(),
+                    kind: DefinitionKind::Function,
+                    span: Span {
+                        start_byte: 20,
+                        end_byte: 30,
+                        start_line: 5,
+                        end_line: 7,
+                    },
+                    file: file.clone(),
+                },
+            ],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let found = resolve_same_file("foo", &file, &index);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "foo");
+
+        let found = resolve_same_file("bar", &file, &index);
+        assert!(found.is_some());
+
+        let not_found = resolve_same_file("baz", &file, &index);
+        assert!(not_found.is_none());
+
+        let wrong_file = resolve_same_file("foo", Path::new("src/other.rs"), &index);
+        assert!(wrong_file.is_none());
+    }
+
+    #[test]
+    fn test_resolve_by_index() {
+        use super::super::index::{Definition, DefinitionKind, FileRecord, Span};
+
+        let mut index = Index::new();
+
+        index.update(FileRecord {
+            path: PathBuf::from("src/a.rs"),
+            mtime: 0,
+            size: 0,
+            definitions: vec![Definition {
+                name: "alpha".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 1,
+                    end_line: 3,
+                },
+                file: PathBuf::from("src/a.rs"),
+            }],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        index.update(FileRecord {
+            path: PathBuf::from("src/b.rs"),
+            mtime: 0,
+            size: 0,
+            definitions: vec![Definition {
+                name: "beta".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 1,
+                    end_line: 3,
+                },
+                file: PathBuf::from("src/b.rs"),
+            }],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let found = resolve_by_index("alpha", &index);
+        assert!(found.is_some());
+        assert_eq!(found.as_ref().unwrap().file, PathBuf::from("src/a.rs"));
+
+        let found = resolve_by_index("beta", &index);
+        assert!(found.is_some());
+        assert_eq!(found.as_ref().unwrap().file, PathBuf::from("src/b.rs"));
+
+        let not_found = resolve_by_index("gamma", &index);
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_resolver_prefers_same_file() {
+        use super::super::index::{Definition, DefinitionKind, FileRecord, Span};
+
+        let mut index = Index::new();
+        let file_a = PathBuf::from("src/a.rs");
+        let file_b = PathBuf::from("src/b.rs");
+
+        index.update(FileRecord {
+            path: file_a.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![Definition {
+                name: "foo".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 1,
+                    end_line: 3,
+                },
+                file: file_a.clone(),
+            }],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        index.update(FileRecord {
+            path: file_b.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![Definition {
+                name: "foo".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 10,
+                    end_line: 12,
+                },
+                file: file_b.clone(),
+            }],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let resolver = Resolver::new(&index, None, PathBuf::from("."));
+
+        let found = resolver.resolve("foo", &file_a).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().file, file_a);
+
+        let found = resolver.resolve("foo", &file_b).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().file, file_b);
+    }
+
+    // =========================================================================
+    // Go Workspace Tests
+    // =========================================================================
+
+    fn setup_go_workspace() -> TempDir {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("go.mod"),
+            "module github.com/example/myproject\n\ngo 1.21\n",
+        )
+        .unwrap();
+
+        fs::write(dir.path().join("main.go"), "package main\n\nfunc main() {}\n").unwrap();
+
+        let pkg_dir = dir.path().join("pkg/utils");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("helpers.go"), "package utils\n\nfunc Helper() {}\n").unwrap();
+
+        let internal_dir = dir.path().join("internal/core");
+        fs::create_dir_all(&internal_dir).unwrap();
+        fs::write(internal_dir.join("core.go"), "package core\n\nfunc Process() {}\n").unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn test_go_workspace_discovery() {
+        let dir = setup_go_workspace();
+        let ws = GoWorkspace::discover(dir.path()).unwrap();
+
+        assert!(ws.is_some());
+        let ws = ws.unwrap();
+        assert_eq!(ws.root(), dir.path());
+        assert_eq!(ws.module_path(), "github.com/example/myproject");
+    }
+
+    #[test]
+    fn test_go_workspace_no_go_mod() {
+        let dir = TempDir::new().unwrap();
+        let ws = GoWorkspace::discover(dir.path()).unwrap();
+        assert!(ws.is_none());
+    }
+
+    #[test]
+    fn test_go_workspace_resolve_root() {
+        let dir = setup_go_workspace();
+        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("github.com/example/myproject");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("main.go"));
+    }
+
+    #[test]
+    fn test_go_workspace_resolve_package() {
+        let dir = setup_go_workspace();
+        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("github.com/example/myproject/pkg/utils");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("helpers.go"));
+    }
+
+    #[test]
+    fn test_go_workspace_resolve_external() {
+        let dir = setup_go_workspace();
+        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("github.com/other/package");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_go_mod_fallback_parsing() {
+        let content = "module github.com/foo/bar\n\ngo 1.21\n";
+        let module = parse_go_mod_fallback(content);
+        assert_eq!(module, Some("github.com/foo/bar".to_string()));
+
+        let content = "// comment\nmodule   example.com/test  \n";
+        let module = parse_go_mod_fallback(content);
+        assert_eq!(module, Some("example.com/test".to_string()));
+    }
+
+    // =========================================================================
+    // TypeScript Workspace Tests
+    // =========================================================================
+
+    fn setup_ts_workspace() -> TempDir {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"name": "my-app", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{
+                "compilerOptions": {
+                    "baseUrl": ".",
+                    "paths": {
+                        "@/*": ["src/*"],
+                        "@utils/*": ["src/utils/*"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("index.ts"), "export const main = () => {};\n").unwrap();
+
+        let utils_dir = src_dir.join("utils");
+        fs::create_dir_all(&utils_dir).unwrap();
+        fs::write(utils_dir.join("helpers.ts"), "export const helper = () => {};\n").unwrap();
+
+        let components_dir = src_dir.join("components");
+        fs::create_dir_all(&components_dir).unwrap();
+        fs::write(components_dir.join("Button.tsx"), "export const Button = () => null;\n")
+            .unwrap();
+        fs::write(components_dir.join("index.ts"), "export * from './Button';\n").unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn test_ts_workspace_discovery() {
+        let dir = setup_ts_workspace();
+        let ws = TsWorkspace::discover(dir.path()).unwrap();
+
+        assert!(ws.is_some());
+        let ws = ws.unwrap();
+        assert_eq!(ws.root(), dir.path());
+        assert_eq!(ws.name(), "my-app");
+        assert!(!ws.paths().is_empty());
+    }
+
+    #[test]
+    fn test_ts_workspace_no_package_json() {
+        let dir = TempDir::new().unwrap();
+        let ws = TsWorkspace::discover(dir.path()).unwrap();
+        assert!(ws.is_none());
+    }
+
+    #[test]
+    fn test_ts_workspace_resolve_alias() {
+        let dir = setup_ts_workspace();
+        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("@/index");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("src/index.ts"));
+    }
+
+    #[test]
+    fn test_ts_workspace_resolve_utils_alias() {
+        let dir = setup_ts_workspace();
+        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("@utils/helpers");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("src/utils/helpers.ts"));
+    }
+
+    #[test]
+    fn test_ts_workspace_resolve_index_file() {
+        let dir = setup_ts_workspace();
+        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("@/components");
+        assert!(resolved.is_some());
+        let path = resolved.unwrap();
+        assert!(path.ends_with("components/index.ts"));
+    }
+
+    #[test]
+    fn test_ts_workspace_relative_ignored() {
+        let dir = setup_ts_workspace();
+        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("./local");
+        assert!(resolved.is_none());
+
+        let resolved = ws.resolve_module("../parent");
+        assert!(resolved.is_none());
     }
 }
