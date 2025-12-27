@@ -29,6 +29,18 @@ call_query = """
     (parenthesized_expression (selector_expression field: (field_identifier) @name))
   ]) @reference.call
 """
+import_query = """
+(import_spec
+  name: [
+    (package_identifier) @alias
+    (dot) @dot_import
+    (blank_identifier) @side_effect
+  ]?
+  path: [
+    (interpreted_string_literal) @path
+    (raw_string_literal) @path
+  ])
+"""
 
 [[language]]
 name = "zig"
@@ -51,6 +63,15 @@ call_query = """
     (identifier) @name
     (field_expression member: (identifier) @name)
   ]) @reference.call
+"""
+import_query = """
+(variable_declaration
+  (identifier) @name
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments
+      (string (string_content) @path)))
+  (#eq? @_builtin "@import")) @import
 """
 
 [[language]]
@@ -81,6 +102,13 @@ call_query = """
     (field_expression field: (field_identifier) @name)
     (parenthesized_expression (identifier) @name)
   ]) @reference.call
+"""
+import_query = """
+(preproc_include
+  path: [
+    (system_lib_string) @system_path
+    (string_literal) @local_path
+  ]) @include
 """
 
 [[language]]
@@ -155,6 +183,13 @@ call_query = """
     (field_expression field: (field_identifier) @name)
   ]) @reference.call
 """
+import_query = """
+(preproc_include
+  path: [
+    (system_lib_string) @system_path
+    (string_literal) @local_path
+  ]) @include
+"""
 
 [[language]]
 name = "bash"
@@ -173,6 +208,17 @@ definition_query = """
 """
 call_query = """
 (command_name (word) @name) @reference.call
+"""
+import_query = """
+(command
+  name: (command_name) @_cmd
+  argument: [
+    (word) @path
+    (string) @path
+    (raw_string) @path
+    (concatenation) @path
+  ]
+  (#any-of? @_cmd "source" ".")) @import
 """
 
 [[language]]
@@ -203,6 +249,28 @@ call_query = """
     (identifier) @name
     (attribute attribute: (identifier) @name)
   ]) @reference.call
+"""
+import_query = """
+(import_statement
+  name: [
+    (dotted_name) @path
+    (aliased_import
+      name: (dotted_name) @path
+      alias: (identifier) @alias)
+  ]) @import
+
+(import_from_statement
+  module_name: [
+    (dotted_name) @module
+    (relative_import) @module
+  ]
+  name: [
+    (dotted_name) @name
+    (aliased_import
+      name: (dotted_name) @name
+      alias: (identifier) @alias)
+  ]?
+  (wildcard_import)? @wildcard) @import
 """
 
 [[language]]
@@ -244,6 +312,19 @@ call_query = """
     (member_expression property: (property_identifier) @name)
   ]) @reference.call
 """
+import_query = """
+(import_statement
+  (import_clause
+    [
+      (identifier) @default_import
+      (named_imports
+        (import_specifier
+          name: (identifier) @name
+          alias: (identifier)? @alias))
+      (namespace_import (identifier) @namespace)
+    ])
+  source: (string (string_fragment) @source)) @import
+"""
 
 [[language]]
 name = "rust"
@@ -267,6 +348,29 @@ call_query = """
     (scoped_identifier name: (identifier) @name)
     (field_expression field: (field_identifier) @name)
   ]) @reference.call
+"""
+import_query = """
+(use_declaration
+  argument: [
+    (identifier) @path
+    (scoped_identifier) @path
+    (use_as_clause
+      path: [
+        (identifier) @path
+        (scoped_identifier) @path
+      ]
+      alias: (identifier) @alias)
+    (use_list) @list
+    (scoped_use_list
+      path: [
+        (identifier) @path
+        (scoped_identifier) @path
+      ])
+    (use_wildcard) @wildcard
+  ]) @import
+
+(mod_item
+  name: (identifier) @mod_name) @mod_decl
 """
 
 [[language]]
@@ -307,6 +411,24 @@ call_query = """
     (member_expression property: (property_identifier) @name)
   ]) @reference.call
 """
+import_query = """
+(import_statement
+  (import_clause
+    [
+      (identifier) @default_import
+      (named_imports
+        (import_specifier
+          name: (identifier) @name
+          alias: (identifier)? @alias))
+      (namespace_import (identifier) @namespace)
+    ])
+  source: (string (string_fragment) @source)) @import
+
+(call_expression
+  function: (identifier) @_require
+  arguments: (arguments (string (string_fragment) @source))
+  (#eq? @_require "require")) @require
+"""
 
 [[language]]
 name = "java"
@@ -341,6 +463,14 @@ call_query = """
   name: (identifier) @name) @reference.call
 (object_creation_expression
   type: (type_identifier) @name) @reference.call
+"""
+import_query = """
+(import_declaration
+  [
+    (scoped_identifier) @path
+    (identifier) @path
+  ]
+  (asterisk)? @wildcard) @import
 """
 
 [[language]]
@@ -391,4 +521,13 @@ call_query = """
     (identifier) @name
     (field_expression field: (identifier) @name)
   ]) @reference.call
+"""
+import_query = """
+(import_declaration
+  path: (_)+ @path
+  [
+    (namespace_wildcard) @wildcard
+    (namespace_selectors) @selectors
+    (as_renamed_identifier) @alias
+  ]?) @import
 """
