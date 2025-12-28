@@ -659,15 +659,17 @@ const DEFINITION_PATTERNS: &[DefinitionPattern] = &[
 ];
 
 pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>> {
-    use std::io::{BufRead, BufReader};
+    use grep::regex::RegexMatcher;
+    use grep::searcher::sinks::UTF8;
+    use grep::searcher::Searcher;
 
     let escaped = regex::escape(callee);
 
     for pattern_def in DEFINITION_PATTERNS {
         let pattern = pattern_def.pattern.replace("{NAME}", &escaped);
 
-        let re = match regex::Regex::new(&pattern) {
-            Ok(r) => r,
+        let matcher = match RegexMatcher::new(&pattern) {
+            Ok(m) => m,
             Err(_) => continue,
         };
 
@@ -684,32 +686,29 @@ pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>
                 continue;
             }
 
-            let file = match fs::File::open(path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
+            let mut found: Option<(u64, PathBuf)> = None;
 
-            let reader = BufReader::new(file);
+            let _ = Searcher::new().search_path(
+                &matcher,
+                path,
+                UTF8(|line_num, _line| {
+                    found = Some((line_num, path.to_path_buf()));
+                    Ok(false)
+                }),
+            );
 
-            for (line_num, line) in reader.lines().enumerate() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => continue,
-                };
-
-                if re.is_match(&line) {
-                    return Ok(Some(Definition {
-                        name: callee.to_string(),
-                        kind: super::index::DefinitionKind::Function,
-                        span: super::index::Span {
-                            start_byte: 0,
-                            end_byte: 0,
-                            start_line: line_num + 1,
-                            end_line: line_num + 1,
-                        },
-                        file: path.to_path_buf(),
-                    }));
-                }
+            if let Some((line_num, file_path)) = found {
+                return Ok(Some(Definition {
+                    name: callee.to_string(),
+                    kind: super::index::DefinitionKind::Function,
+                    span: super::index::Span {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_line: line_num as usize,
+                        end_line: line_num as usize,
+                    },
+                    file: file_path,
+                }));
             }
         }
     }

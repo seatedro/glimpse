@@ -28,6 +28,7 @@ rayon = "1.10.0"
 # Code analysis dependencies
 bincode = "1.3"
 cc = "1.2"
+grep = "0.4"
 libloading = "0.8"
 tree-sitter = "0.25"
 

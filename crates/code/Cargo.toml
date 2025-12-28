@@ -11,6 +11,7 @@ cc.workspace = true
 dirs.workspace = true
 git2.workspace = true
 glob.workspace = true
+grep.workspace = true
 libloading.workspace = true
 once_cell.workspace = true
 regex.workspace = true
