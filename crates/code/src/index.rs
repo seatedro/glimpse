@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufReader, BufWriter};
@@ -148,7 +148,8 @@ pub fn save_index(index: &Index, root: &Path) -> Result<()> {
     let dir = path.parent().unwrap();
     fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
-    let file = File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+    let file =
+        File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
     let writer = BufWriter::new(file);
 
     bincode::serialize_into(writer, index).context("failed to serialize index")?;
@@ -180,7 +181,8 @@ pub fn clear_index(root: &Path) -> Result<()> {
     let path = index_path(root)?;
     if let Some(dir) = path.parent() {
         if dir.exists() {
-            fs::remove_dir_all(dir).with_context(|| format!("failed to remove {}", dir.display()))?;
+            fs::remove_dir_all(dir)
+                .with_context(|| format!("failed to remove {}", dir.display()))?;
         }
     }
     Ok(())

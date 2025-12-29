@@ -75,7 +75,11 @@ fn process(cfg: Config) {
         let callers: Vec<_> = result
             .calls
             .iter()
-            .filter_map(|c| c.caller.as_ref().map(|caller| (caller.as_str(), c.callee.as_str())))
+            .filter_map(|c| {
+                c.caller
+                    .as_ref()
+                    .map(|caller| (caller.as_str(), c.callee.as_str()))
+            })
             .collect();
 
         assert!(callers.contains(&("main", "helper")));
@@ -148,7 +152,9 @@ class Config:
 
         assert!(!result.imports.is_empty());
         let paths: Vec<_> = result.imports.iter().map(|i| &i.module_path).collect();
-        assert!(paths.iter().any(|p| p.contains("os") || p.contains("pathlib")));
+        assert!(paths
+            .iter()
+            .any(|p| p.contains("os") || p.contains("pathlib")));
     }
 }
 

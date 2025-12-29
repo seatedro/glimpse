@@ -363,9 +363,21 @@ mod tests {
     fn test_all_languages_have_queries() {
         let registry = Registry::load().unwrap();
         for lang in registry.languages() {
-            assert!(!lang.definition_query.is_empty(), "{} missing definition_query", lang.name);
-            assert!(!lang.call_query.is_empty(), "{} missing call_query", lang.name);
-            assert!(!lang.import_query.is_empty(), "{} missing import_query", lang.name);
+            assert!(
+                !lang.definition_query.is_empty(),
+                "{} missing definition_query",
+                lang.name
+            );
+            assert!(
+                !lang.call_query.is_empty(),
+                "{} missing call_query",
+                lang.name
+            );
+            assert!(
+                !lang.import_query.is_empty(),
+                "{} missing import_query",
+                lang.name
+            );
         }
     }
 
@@ -408,7 +420,9 @@ mod tests {
     fn test_load_rust_grammar() {
         let language = load_language("rust").expect("failed to load rust grammar");
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).expect("failed to set language");
+        parser
+            .set_language(&language)
+            .expect("failed to set language");
 
         let source = "fn main() { println!(\"Hello\"); }";
         let tree = parser.parse(source, None).expect("failed to parse");
@@ -423,7 +437,9 @@ mod tests {
     fn test_load_by_extension() {
         let language = load_language_by_extension("rs").expect("failed to load by extension");
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).expect("failed to set language");
+        parser
+            .set_language(&language)
+            .expect("failed to set language");
 
         let tree = parser.parse("fn foo() {}", None).expect("failed to parse");
         assert_eq!(tree.root_node().kind(), "source_file");

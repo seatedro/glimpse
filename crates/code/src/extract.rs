@@ -25,14 +25,14 @@ impl QuerySet {
         let calls = Query::new(&language, &entry.call_query)
             .with_context(|| format!("failed to compile call query for {}", entry.name))?;
 
-        let imports = if entry.import_query.trim().is_empty() {
-            None
-        } else {
-            Some(
-                Query::new(&language, &entry.import_query)
-                    .with_context(|| format!("failed to compile import query for {}", entry.name))?,
-            )
-        };
+        let imports =
+            if entry.import_query.trim().is_empty() {
+                None
+            } else {
+                Some(Query::new(&language, &entry.import_query).with_context(|| {
+                    format!("failed to compile import query for {}", entry.name)
+                })?)
+            };
 
         let def_name_idx = definitions
             .capture_index_for_name("name")
@@ -124,12 +124,7 @@ impl Extractor {
         &self.language
     }
 
-    pub fn extract_definitions(
-        &self,
-        tree: &Tree,
-        source: &[u8],
-        path: &Path,
-    ) -> Vec<Definition> {
+    pub fn extract_definitions(&self, tree: &Tree, source: &[u8], path: &Path) -> Vec<Definition> {
         let mut cursor = QueryCursor::new();
         let mut definitions = Vec::new();
         let mut matches = cursor.matches(&self.queries.definitions, tree.root_node(), source);
