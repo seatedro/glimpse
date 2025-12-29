@@ -320,6 +320,45 @@ mod resolver_tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "imported_helper");
     }
+
+    #[test]
+    fn test_import_discovery_tracks_files_for_reindexing() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        let utils_dir = src.join("utils");
+        fs::create_dir_all(&utils_dir).unwrap();
+
+        fs::write(utils_dir.join("helper.rs"), "pub fn helper() {}").unwrap();
+
+        let mut index = Index::new();
+        let main_file = src.join("main.rs");
+
+        index.update(FileRecord {
+            path: main_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![make_def("main", &main_file)],
+            calls: vec![],
+            imports: vec![Import {
+                module_path: "crate::utils::helper".to_string(),
+                alias: None,
+                span: make_span(),
+                file: main_file.clone(),
+            }],
+        });
+
+        let resolver = Resolver::new(&index, dir.path().to_path_buf());
+
+        let found = resolver.resolve("helper", &main_file).unwrap();
+        assert!(found.is_some(), "grep fallback should find unindexed definition");
+        assert_eq!(found.unwrap().name, "helper");
+
+        let discovered = resolver.files_to_index();
+        assert!(
+            discovered.iter().any(|p| p.ends_with("helper.rs")),
+            "should track helper.rs for re-indexing"
+        );
+    }
 }
 
 mod call_graph_resolution {
@@ -390,7 +429,7 @@ mod call_graph_resolution {
     }
 
     #[test]
-    fn test_resolver_finds_unindexed_via_grep() {
+    fn test_graph_uses_grep_fallback_for_unindexed() {
         let dir = TempDir::new().unwrap();
         let file_caller = dir.path().join("caller.rs");
         let file_hidden = dir.path().join("hidden.rs");
@@ -398,15 +437,29 @@ mod call_graph_resolution {
         fs::write(&file_caller, "fn caller() { hidden_func(); }").unwrap();
         fs::write(&file_hidden, "fn hidden_func() {}").unwrap();
 
-        let index = Index::new();
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
+        let mut index = Index::new();
 
-        let found = resolver.resolve("hidden_func", &file_caller).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "hidden_func");
+        index.update(FileRecord {
+            path: file_caller.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![make_def("caller", &file_caller)],
+            calls: vec![Call {
+                callee: "hidden_func".to_string(),
+                caller: Some("caller".to_string()),
+                span: make_span(),
+                file: file_caller.clone(),
+            }],
+            imports: vec![],
+        });
 
-        let discovered = resolver.files_to_index();
-        assert!(!discovered.is_empty());
+        let graph = CallGraph::build(&index, dir.path());
+
+        let caller_id = graph.find_node("caller").unwrap();
+        let callees = graph.get_callees(caller_id);
+
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0].definition.name, "hidden_func");
     }
 
     #[test]

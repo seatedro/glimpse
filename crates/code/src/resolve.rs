@@ -435,6 +435,54 @@ pub fn resolve_by_index(callee: &str, index: &Index) -> Option<Definition> {
     index.definitions().find(|d| d.name == callee).cloned()
 }
 
+fn search_file_for_def(callee: &str, file: &Path) -> Option<Definition> {
+    use grep::regex::RegexMatcher;
+    use grep::searcher::sinks::UTF8;
+    use grep::searcher::Searcher;
+
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let escaped = regex::escape(callee);
+
+    for pattern_def in DEFINITION_PATTERNS {
+        if !pattern_def.extensions.contains(&ext) {
+            continue;
+        }
+
+        let pattern = pattern_def.pattern.replace("{NAME}", &escaped);
+        let matcher = match RegexMatcher::new(&pattern) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let mut found: Option<u64> = None;
+
+        let _ = Searcher::new().search_path(
+            &matcher,
+            file,
+            UTF8(|line_num, _line| {
+                found = Some(line_num);
+                Ok(false)
+            }),
+        );
+
+        if let Some(line_num) = found {
+            return Some(Definition {
+                name: callee.to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_line: line_num as usize,
+                    end_line: line_num as usize,
+                },
+                file: file.to_path_buf(),
+            });
+        }
+    }
+
+    None
+}
+
 pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>> {
     use grep::regex::RegexMatcher;
     use grep::searcher::sinks::UTF8;
@@ -551,12 +599,18 @@ impl<'a> Resolver<'a> {
                 if let Some(def) = self.find_def_in_file(&resolved, callee) {
                     return Some(def);
                 }
+                if let Some(def) = search_file_for_def(callee, &resolved) {
+                    return Some(def);
+                }
             }
 
             let patterns = normalize_to_patterns(&import.module_path, ext);
             if let Some(resolved) = search_patterns(&patterns, &self.root) {
                 self.discovered_files.borrow_mut().insert(resolved.clone());
                 if let Some(def) = self.find_def_in_file(&resolved, callee) {
+                    return Some(def);
+                }
+                if let Some(def) = search_file_for_def(callee, &resolved) {
                     return Some(def);
                 }
             }

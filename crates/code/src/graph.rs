@@ -50,7 +50,11 @@ impl CallGraph {
                     .resolve(&call.callee, &call.file)
                     .ok()
                     .flatten()
-                    .and_then(|def| graph.find_node(&def.name))
+                    .map(|def| {
+                        graph
+                            .find_node_by_file_and_name(&def.file, &def.name)
+                            .unwrap_or_else(|| graph.add_definition(def))
+                    })
             });
 
             if let (Some(caller), Some(callee)) = (caller_id, callee_id) {
