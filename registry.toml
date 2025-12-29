@@ -46,6 +46,11 @@ import_query = """
   ])
 """
 
+[language.lsp]
+binary = "gopls"
+args = ["serve"]
+go_package = "golang.org/x/tools/gopls@latest"
+
 [[language]]
 name = "zig"
 extensions = ["zig"]
@@ -118,6 +123,20 @@ import_query = """
     (string_literal) @local_path
   ]) @include
 """
+
+[language.lsp]
+binary = "clangd"
+args = []
+version = "19.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}.zip"
+archive = "zip"
+binary_path = "clangd_{version}/bin/clangd"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x86_64"
+"x86_64-apple-darwin" = "mac-x86_64"
+"aarch64-apple-darwin" = "mac-arm64"
+"x86_64-pc-windows-msvc" = "windows-x86_64"
 
 [[language]]
 name = "cpp"
@@ -203,6 +222,20 @@ import_query = """
   ]) @include
 """
 
+[language.lsp]
+binary = "clangd"
+args = []
+version = "19.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}.zip"
+archive = "zip"
+binary_path = "clangd_{version}/bin/clangd"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x86_64"
+"x86_64-apple-darwin" = "mac-x86_64"
+"aarch64-apple-darwin" = "mac-arm64"
+"x86_64-pc-windows-msvc" = "windows-x86_64"
+
 [[language]]
 name = "bash"
 extensions = ["sh", "bash"]
@@ -287,6 +320,11 @@ import_query = """
   (wildcard_import)? @wildcard) @import
 """
 
+[language.lsp]
+binary = "pyright-langserver"
+args = ["--stdio"]
+npm_package = "pyright"
+
 [[language]]
 name = "typescript"
 extensions = ["ts", "mts", "cts"]
@@ -342,6 +380,11 @@ import_query = """
   source: (string (string_fragment) @source)) @import
 """
 
+[language.lsp]
+binary = "typescript-language-server"
+args = ["--stdio"]
+npm_package = "typescript-language-server typescript"
+
 [[language]]
 name = "rust"
 extensions = ["rs"]
@@ -392,6 +435,21 @@ import_query = """
 (mod_item
   name: (identifier) @mod_name) @mod_decl
 """
+
+[language.lsp]
+binary = "rust-analyzer"
+args = []
+version = "2024-12-23"
+url_template = "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-{target}.gz"
+archive = "gz"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "x86_64-unknown-linux-gnu"
+"x86_64-unknown-linux-musl" = "x86_64-unknown-linux-musl"
+"aarch64-unknown-linux-gnu" = "aarch64-unknown-linux-gnu"
+"x86_64-apple-darwin" = "x86_64-apple-darwin"
+"aarch64-apple-darwin" = "aarch64-apple-darwin"
+"x86_64-pc-windows-msvc" = "x86_64-pc-windows-msvc"
 
 [[language]]
 name = "javascript"
@@ -451,6 +509,11 @@ import_query = """
   arguments: (arguments (string (string_fragment) @source))
   (#eq? @_require "require")) @require
 """
+
+[language.lsp]
+binary = "typescript-language-server"
+args = ["--stdio"]
+npm_package = "typescript-language-server typescript"
 
 [[language]]
 name = "java"

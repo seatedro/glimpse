@@ -84,6 +84,10 @@ pub struct CodeArgs {
     /// Strict mode: only resolve calls via imports (no global name matching)
     #[arg(long)]
     pub strict: bool,
+
+    /// Precise mode: use LSP for type-aware resolution (slower but more accurate)
+    #[arg(long)]
+    pub precise: bool,
 }
 
 #[derive(Parser, Debug, Clone)]

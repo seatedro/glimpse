@@ -20,6 +20,21 @@ static LOADED_LANGUAGES: Lazy<Mutex<HashMap<String, Language>>> =
 static LOADED_LIBRARIES: Lazy<Mutex<Vec<Library>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct LspConfig {
+    pub binary: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub version: Option<String>,
+    pub url_template: Option<String>,
+    pub archive: Option<String>,
+    pub binary_path: Option<String>,
+    #[serde(default)]
+    pub targets: std::collections::HashMap<String, String>,
+    pub npm_package: Option<String>,
+    pub go_package: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct LanguageEntry {
     pub name: String,
     pub extensions: Vec<String>,
@@ -30,6 +45,7 @@ pub struct LanguageEntry {
     pub definition_query: String,
     pub call_query: String,
     pub import_query: String,
+    pub lsp: Option<LspConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +263,13 @@ pub fn cache_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("glimpse")
         .join("grammars")
+}
+
+pub fn lsp_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("glimpse")
+        .join("lsp")
 }
 
 pub fn load_language(name: &str) -> Result<Language> {

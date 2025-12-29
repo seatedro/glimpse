@@ -45,6 +45,10 @@ toml = "0.8.19"
 tree-sitter = "0.25"
 url = "2.5"
 walkdir = "2.5.0"
+lsp-types = "0.97"
+which = "8.0"
+flate2 = "1.0"
+zip = "2.2"
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }
@@ -53,4 +57,3 @@ serde_yaml = "0.9"
 [dev-dependencies]
 tempfile = "3.14.0"
 mockito = "1.4"
-which = "8.0.0"

@@ -275,7 +275,7 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
         save_index(&index, &root)?;
     }
 
-    let graph = CallGraph::build_with_options(&index, args.strict);
+    let graph = CallGraph::build_precise(&index, &root, args.strict, args.precise);
 
     let node_id = if let Some(ref file) = target.file {
         let file_path = root.join(file);
