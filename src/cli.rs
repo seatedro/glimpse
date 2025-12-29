@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 use glimpse::{Config, Exclude, OutputFormat, TokenizerType};
@@ -48,6 +48,103 @@ impl From<CliTokenizerType> for TokenizerType {
     }
 }
 
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Generate call graph for a function
+    #[command(name = "code")]
+    Code(CodeArgs),
+
+    /// Manage the code index
+    #[command(name = "index")]
+    Index(IndexArgs),
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct CodeArgs {
+    /// Target function in file:function format (e.g., src/main.rs:main or :main)
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Project root directory
+    #[arg(short, long, default_value = ".")]
+    pub root: PathBuf,
+
+    /// Include callers (reverse call graph)
+    #[arg(long)]
+    pub callers: bool,
+
+    /// Maximum depth to traverse
+    #[arg(short, long)]
+    pub depth: Option<usize>,
+
+    /// Output file (default: stdout)
+    #[arg(short = 'f', long)]
+    pub file: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct IndexArgs {
+    #[command(subcommand)]
+    pub command: IndexCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum IndexCommand {
+    /// Build or update the index for a project
+    Build {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Force rebuild (ignore existing index)
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Clear the index for a project
+    Clear {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    /// Show index status and stats
+    Status {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionTarget {
+    pub file: Option<PathBuf>,
+    pub function: String,
+}
+
+impl FunctionTarget {
+    pub fn parse(target: &str) -> anyhow::Result<Self> {
+        if let Some((file, func)) = target.rsplit_once(':') {
+            if file.is_empty() {
+                Ok(Self {
+                    file: None,
+                    function: func.to_string(),
+                })
+            } else {
+                Ok(Self {
+                    file: Some(PathBuf::from(file)),
+                    function: func.to_string(),
+                })
+            }
+        } else {
+            Ok(Self {
+                file: None,
+                function: target.to_string(),
+            })
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "glimpse",
@@ -55,6 +152,9 @@ impl From<CliTokenizerType> for TokenizerType {
     version
 )]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     #[arg(default_value = ".")]
     pub paths: Vec<String>,
 
@@ -205,5 +305,45 @@ fn parse_exclude(value: &str) -> Result<Exclude, String> {
         Ok(Exclude::File(path))
     } else {
         Ok(Exclude::Pattern(value.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_function_target_parse_with_file() {
+        let target = FunctionTarget::parse("src/main.rs:main").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("src/main.rs")));
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_without_file() {
+        let target = FunctionTarget::parse(":main").unwrap();
+        assert_eq!(target.file, None);
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_function_only() {
+        let target = FunctionTarget::parse("main").unwrap();
+        assert_eq!(target.file, None);
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_nested_path() {
+        let target = FunctionTarget::parse("src/code/graph.rs:build").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("src/code/graph.rs")));
+        assert_eq!(target.function, "build");
+    }
+
+    #[test]
+    fn test_function_target_parse_windows_path() {
+        let target = FunctionTarget::parse("C:\\src\\main.rs:main").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("C:\\src\\main.rs")));
+        assert_eq!(target.function, "main");
     }
 }
