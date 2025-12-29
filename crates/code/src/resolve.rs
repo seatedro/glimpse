@@ -297,6 +297,29 @@ fn path_matches_module(file: &Path, module_parts: &[&str]) -> bool {
         .all(|(module, file)| *module == *file)
 }
 
+fn path_matches_java_package(file: &Path, package_parts: &[&str]) -> bool {
+    let file_parts: Vec<&str> = file
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+
+    if package_parts.is_empty() {
+        return true;
+    }
+
+    if package_parts.len() > file_parts.len() {
+        return false;
+    }
+
+    for window in file_parts.windows(package_parts.len()) {
+        if window == package_parts {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[derive(Debug, Clone)]
 pub struct TsWorkspace {
     root: PathBuf,
@@ -593,6 +616,115 @@ impl PythonWorkspace {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ZigWorkspace {
+    root: PathBuf,
+    packages: Vec<(String, PathBuf)>,
+}
+
+impl WorkspaceDiscovery for ZigWorkspace {
+    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
+        let zon_path = root.join("build.zig.zon");
+        if !zon_path.exists() {
+            return Ok(None);
+        }
+
+        let content = fs::read_to_string(&zon_path)
+            .with_context(|| format!("failed to read {}", zon_path.display()))?;
+
+        let packages = parse_zig_zon_deps(&content, root);
+
+        Ok(Some(Box::new(ZigWorkspace {
+            root: root.to_path_buf(),
+            packages,
+        })))
+    }
+
+    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
+        if module_path == "std" {
+            return None;
+        }
+
+        if module_path.ends_with(".zig") || module_path.contains('/') {
+            let resolved = self.root.join("src").join(module_path);
+            if resolved.exists() {
+                return Some(resolved);
+            }
+            let resolved = self.root.join(module_path);
+            if resolved.exists() {
+                return Some(resolved);
+            }
+            return None;
+        }
+
+        for (name, pkg_path) in &self.packages {
+            if name == module_path {
+                return find_zig_root_file(pkg_path, name);
+            }
+        }
+
+        None
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl ZigWorkspace {
+    pub fn packages(&self) -> &[(String, PathBuf)] {
+        &self.packages
+    }
+}
+
+fn parse_zig_zon_deps(content: &str, root: &Path) -> Vec<(String, PathBuf)> {
+    let mut packages = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.starts_with('.') || !line.contains('=') {
+            continue;
+        }
+
+        let Some(name_end) = line.find('=') else {
+            continue;
+        };
+        let name = line[1..name_end].trim().trim_matches(|c| c == ' ');
+
+        if !line.contains(".path") {
+            continue;
+        }
+
+        if let Some(path_start) = line.find(".path") {
+            let rest = &line[path_start..];
+            if let Some(quote_start) = rest.find('"') {
+                let after_quote = &rest[quote_start + 1..];
+                if let Some(quote_end) = after_quote.find('"') {
+                    let path_str = &after_quote[..quote_end];
+                    packages.push((name.to_string(), root.join(path_str)));
+                }
+            }
+        }
+    }
+
+    packages
+}
+
+fn find_zig_root_file(pkg_path: &Path, name: &str) -> Option<PathBuf> {
+    let candidates = [
+        pkg_path.join("src/root.zig"),
+        pkg_path.join("src/lib.zig"),
+        pkg_path.join("src/main.zig"),
+        pkg_path.join(format!("src/{}.zig", name)),
+        pkg_path.join(format!("{}.zig", name)),
+        pkg_path.join("root.zig"),
+        pkg_path.join("lib.zig"),
+        pkg_path.join("main.zig"),
+    ];
+
+    candidates.into_iter().find(|c| c.exists())
+}
+
 fn expand_glob(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     let full_pattern = root.join(pattern);
     let pattern_str = full_pattern.to_string_lossy();
@@ -819,6 +951,9 @@ impl<'a> Resolver<'a> {
             "rs" => self.resolve_rust_import(callee, from_file),
             "py" => self.resolve_python_import(callee, from_file),
             "go" => self.resolve_go_import(callee, from_file),
+            "zig" => self.resolve_zig_import(callee, from_file),
+            "java" => self.resolve_java_import(callee, from_file),
+            "scala" | "sc" => self.resolve_scala_import(callee, from_file),
             "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
                 self.resolve_ts_import(callee, from_file)
             }
@@ -951,6 +1086,121 @@ impl<'a> Resolver<'a> {
                 }
                 if path_matches_module(&def.file, &segments) {
                     return Some(def.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_zig_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
+        let record = self.index.get(from_file)?;
+
+        for import in &record.imports {
+            let import_name = import.alias.as_deref().unwrap_or("");
+            if import_name != callee {
+                continue;
+            }
+
+            let import_path = &import.module_path;
+
+            if import_path == "std" {
+                continue;
+            }
+
+            if import_path.ends_with(".zig") || import_path.contains('/') {
+                let from_dir = from_file.parent()?;
+                let resolved = from_dir.join(import_path);
+                if resolved.exists() {
+                    if let Some(record) = self.index.get(&resolved) {
+                        if let Some(def) = record.definitions.first() {
+                            return Some(def.clone());
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if let Some(ref ws) = self.workspace {
+                if let Some(resolved_path) = ws.resolve_module(import_path) {
+                    if let Some(target_record) = self.index.get(&resolved_path) {
+                        if let Some(def) = target_record.definitions.first() {
+                            return Some(def.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_java_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
+        let record = self.index.get(from_file)?;
+
+        for import in &record.imports {
+            let segments: Vec<&str> = import.module_path.split('.').collect();
+            let class_name = segments.last()?;
+
+            if *class_name != callee && *class_name != "*" {
+                continue;
+            }
+
+            if *class_name == "*" {
+                let pkg_segments = &segments[..segments.len() - 1];
+                for def in self.index.definitions() {
+                    if def.name != callee {
+                        continue;
+                    }
+                    if path_matches_java_package(&def.file, pkg_segments) {
+                        return Some(def.clone());
+                    }
+                }
+            } else {
+                for def in self.index.definitions() {
+                    if def.name != *class_name {
+                        continue;
+                    }
+                    if path_matches_java_package(&def.file, &segments[..segments.len() - 1]) {
+                        return Some(def.clone());
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_scala_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
+        let record = self.index.get(from_file)?;
+
+        for import in &record.imports {
+            let segments: Vec<&str> = import.module_path.split('.').collect();
+            let symbol_name = segments.last()?;
+
+            let visible_name = import.alias.as_deref().unwrap_or(symbol_name);
+            if visible_name != callee && *symbol_name != "_" {
+                continue;
+            }
+
+            if *symbol_name == "_" {
+                let pkg_segments = &segments[..segments.len() - 1];
+                for def in self.index.definitions() {
+                    if def.name != callee {
+                        continue;
+                    }
+                    if path_matches_java_package(&def.file, pkg_segments) {
+                        return Some(def.clone());
+                    }
+                }
+            } else {
+                for def in self.index.definitions() {
+                    if def.name != *symbol_name {
+                        continue;
+                    }
+                    if path_matches_java_package(&def.file, &segments[..segments.len() - 1]) {
+                        return Some(def.clone());
+                    }
                 }
             }
         }
@@ -1847,7 +2097,10 @@ version = "0.1.0"
     fn test_path_matches_module_deep_path() {
         let file = PathBuf::from("crates/core/src/utils/helpers.rs");
         assert!(path_matches_module(&file, &["utils", "helpers", "func"]));
-        assert!(path_matches_module(&file, &["src", "utils", "helpers", "func"]));
+        assert!(path_matches_module(
+            &file,
+            &["src", "utils", "helpers", "func"]
+        ));
         assert!(!path_matches_module(
             &file,
             &["wrong", "src", "utils", "helpers", "func"]
@@ -1860,6 +2113,152 @@ version = "0.1.0"
         assert!(!path_matches_module(
             &file,
             &["deeply", "nested", "utils", "helpers", "func"]
+        ));
+    }
+
+    fn setup_zig_workspace() -> TempDir {
+        let dir = TempDir::new().unwrap();
+
+        fs::write(
+            dir.path().join("build.zig.zon"),
+            r#"
+.{
+    .name = .myproject,
+    .dependencies = .{
+        .utils = .{ .path = "vendor/utils" },
+        .remote_pkg = .{ .url = "https://example.com/pkg.tar.gz" },
+    },
+}
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            dir.path().join("build.zig"),
+            "const std = @import(\"std\");\n",
+        )
+        .unwrap();
+
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("main.zig"), "const std = @import(\"std\");\n").unwrap();
+        fs::write(src_dir.join("helper.zig"), "pub fn help() void {}\n").unwrap();
+
+        let vendor_dir = dir.path().join("vendor/utils");
+        fs::create_dir_all(&vendor_dir).unwrap();
+        fs::write(vendor_dir.join("main.zig"), "pub fn utilFn() void {}\n").unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn test_zig_workspace_discovery() {
+        let dir = setup_zig_workspace();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap();
+
+        assert!(ws.is_some());
+        let ws = ws.unwrap();
+        assert_eq!(ws.root(), dir.path());
+        assert_eq!(ws.packages().len(), 1);
+        assert_eq!(ws.packages()[0].0, "utils");
+    }
+
+    #[test]
+    fn test_zig_workspace_no_zon() {
+        let dir = TempDir::new().unwrap();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap();
+        assert!(ws.is_none());
+    }
+
+    #[test]
+    fn test_zig_workspace_resolve_local_package() {
+        let dir = setup_zig_workspace();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("utils");
+        assert!(resolved.is_some());
+        assert!(resolved.unwrap().ends_with("vendor/utils/main.zig"));
+    }
+
+    #[test]
+    fn test_zig_workspace_skip_std() {
+        let dir = setup_zig_workspace();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("std");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_zig_workspace_skip_unknown_package() {
+        let dir = setup_zig_workspace();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("remote_pkg");
+        assert!(resolved.is_none());
+
+        let resolved = ws.resolve_module("nonexistent");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_zig_workspace_resolve_relative_import() {
+        let dir = setup_zig_workspace();
+        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
+
+        let resolved = ws.resolve_module("helper.zig");
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn test_parse_zig_zon_deps() {
+        let content = r#"
+.{
+    .name = .test,
+    .dependencies = .{
+        .foo = .{ .path = "libs/foo" },
+        .bar = .{ .path = "vendor/bar" },
+        .remote = .{ .url = "https://example.com" },
+    },
+}
+"#;
+        let root = Path::new("/project");
+        let deps = parse_zig_zon_deps(content, root);
+
+        assert_eq!(deps.len(), 2);
+        assert!(deps
+            .iter()
+            .any(|(n, p)| n == "foo" && p == Path::new("/project/libs/foo")));
+        assert!(deps
+            .iter()
+            .any(|(n, p)| n == "bar" && p == Path::new("/project/vendor/bar")));
+    }
+
+    #[test]
+    fn test_path_matches_java_package() {
+        let file = PathBuf::from("src/main/java/com/example/MyClass.java");
+        assert!(path_matches_java_package(&file, &["com", "example"]));
+        assert!(path_matches_java_package(&file, &["example"]));
+        assert!(!path_matches_java_package(&file, &["org", "example"]));
+    }
+
+    #[test]
+    fn test_path_matches_java_package_empty() {
+        let file = PathBuf::from("src/MyClass.java");
+        assert!(path_matches_java_package(&file, &[]));
+    }
+
+    #[test]
+    fn test_path_matches_java_package_deeply_nested() {
+        let file = PathBuf::from("src/main/java/com/example/internal/utils/Helper.java");
+        assert!(path_matches_java_package(
+            &file,
+            &["com", "example", "internal", "utils"]
+        ));
+        assert!(path_matches_java_package(&file, &["internal", "utils"]));
+        assert!(!path_matches_java_package(
+            &file,
+            &["com", "other", "internal", "utils"]
         ));
     }
 }
