@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use super::index::{Definition, Index};
-use super::resolve::Resolver;
+use super::index::{Call, Definition, Index};
 
 pub type NodeId = usize;
 
@@ -31,8 +30,7 @@ impl CallGraph {
         }
     }
 
-    pub fn build(index: &Index, root: &Path) -> Self {
-        let resolver = Resolver::new(index, root.to_path_buf());
+    pub fn build(index: &Index) -> Self {
         let mut graph = CallGraph::new();
 
         for def in index.definitions() {
@@ -40,29 +38,21 @@ impl CallGraph {
         }
 
         for call in index.calls() {
-            let caller_id = call
-                .caller
-                .as_ref()
-                .and_then(|name| graph.find_node_by_file_and_name(&call.file, name));
-
-            let callee_id = graph.find_node(&call.callee).or_else(|| {
-                resolver
-                    .resolve(&call.callee, &call.file)
-                    .ok()
-                    .flatten()
-                    .map(|def| {
-                        graph
-                            .find_node_by_file_and_name(&def.file, &def.name)
-                            .unwrap_or_else(|| graph.add_definition(def))
-                    })
-            });
-
-            if let (Some(caller), Some(callee)) = (caller_id, callee_id) {
-                graph.add_edge(caller, callee);
+            if let Some((caller_id, callee_id)) = Self::link_call(&graph, call) {
+                graph.add_edge(caller_id, callee_id);
             }
         }
 
         graph
+    }
+
+    fn link_call(graph: &CallGraph, call: &Call) -> Option<(NodeId, NodeId)> {
+        let caller_id = call
+            .caller
+            .as_ref()
+            .and_then(|name| graph.find_node_by_file_and_name(&call.file, name))?;
+        let callee_id = graph.find_node(&call.callee)?;
+        Some((caller_id, callee_id))
     }
 
     fn add_definition(&mut self, definition: Definition) -> NodeId {
@@ -235,6 +225,67 @@ impl CallGraph {
             .collect()
     }
 
+    pub fn get_callees_to_depth(&self, node_id: NodeId, max_depth: usize) -> Vec<NodeId> {
+        let mut visited = HashSet::new();
+        let mut result = Vec::new();
+        let mut queue = VecDeque::new();
+
+        queue.push_back((node_id, 0));
+        visited.insert(node_id);
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            result.push(current_id);
+
+            if depth >= max_depth {
+                continue;
+            }
+
+            if let Some(node) = self.nodes.get(&current_id) {
+                for &callee_id in &node.callees {
+                    if visited.insert(callee_id) {
+                        queue.push_back((callee_id, depth + 1));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    pub fn get_callers_to_depth(&self, node_id: NodeId, max_depth: usize) -> Vec<NodeId> {
+        let mut visited = HashSet::new();
+        let mut result = Vec::new();
+        let mut queue = VecDeque::new();
+
+        queue.push_back((node_id, 0));
+        visited.insert(node_id);
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            result.push(current_id);
+
+            if depth >= max_depth {
+                continue;
+            }
+
+            if let Some(node) = self.nodes.get(&current_id) {
+                for &caller_id in &node.callers {
+                    if visited.insert(caller_id) {
+                        queue.push_back((caller_id, depth + 1));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    pub fn definitions_to_depth(&self, node_id: NodeId, max_depth: usize) -> Vec<&Definition> {
+        self.get_callees_to_depth(node_id, max_depth)
+            .into_iter()
+            .filter_map(|id| self.nodes.get(&id).map(|n| &n.definition))
+            .collect()
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -296,7 +347,7 @@ mod tests {
     #[test]
     fn test_build_empty_index() {
         let index = Index::new();
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         assert_eq!(graph.node_count(), 0);
         assert_eq!(graph.edge_count(), 0);
     }
@@ -316,7 +367,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         assert_eq!(graph.node_count(), 2);
         assert_eq!(graph.edge_count(), 0);
     }
@@ -336,7 +387,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         assert_eq!(graph.node_count(), 2);
         assert_eq!(graph.edge_count(), 1);
 
@@ -366,7 +417,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
 
         let a_id = graph.find_node("a").unwrap();
         let c_id = graph.find_node("c").unwrap();
@@ -408,7 +459,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let a_id = graph.find_node("a").unwrap();
 
         let transitive = graph.get_transitive_callees(a_id);
@@ -443,7 +494,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let a_id = graph.find_node("a").unwrap();
 
         let transitive = graph.get_transitive_callees(a_id);
@@ -469,7 +520,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let a_id = graph.find_node("a").unwrap();
         let b_id = graph.find_node("b").unwrap();
         let c_id = graph.find_node("c").unwrap();
@@ -502,7 +553,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let a_id = graph.find_node("a").unwrap();
 
         let order = graph.post_order(a_id);
@@ -524,7 +575,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let main_id = graph.find_node("main").unwrap();
 
         let defs = graph.post_order_definitions(main_id);
@@ -545,7 +596,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
         let id = graph.find_node("recursive").unwrap();
         let node = graph.get_node(id).unwrap();
 
@@ -575,7 +626,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
 
         let main_id = graph.find_node("main").unwrap();
         let callees = graph.get_callees(main_id);
@@ -607,7 +658,7 @@ mod tests {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, Path::new("."));
+        let graph = CallGraph::build(&index);
 
         let a_id = graph.find_node_by_file_and_name(Path::new("src/a.rs"), "foo");
         let b_id = graph.find_node_by_file_and_name(Path::new("src/b.rs"), "foo");

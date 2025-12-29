@@ -5,7 +5,6 @@ use std::path::Path;
 use glimpse::code::extract::Extractor;
 use glimpse::code::graph::CallGraph;
 use glimpse::code::index::{file_fingerprint, FileRecord, Index};
-use glimpse::code::resolve::{resolve_by_index, resolve_by_search, resolve_same_file, Resolver};
 use tree_sitter::Parser;
 
 fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &str) {
@@ -27,341 +26,7 @@ fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &st
     index.update(record);
 }
 
-mod resolver_tests {
-    use super::*;
-    use glimpse::code::index::{Call, Definition, DefinitionKind, FileRecord, Import, Span};
-    use std::path::PathBuf;
-    use tempfile::TempDir;
-
-    fn make_span() -> Span {
-        Span {
-            start_byte: 0,
-            end_byte: 10,
-            start_line: 1,
-            end_line: 1,
-        }
-    }
-
-    fn make_def(name: &str, file: &Path) -> Definition {
-        Definition {
-            name: name.to_string(),
-            kind: DefinitionKind::Function,
-            span: make_span(),
-            file: file.to_path_buf(),
-        }
-    }
-
-    #[test]
-    fn test_resolve_same_file_priority() {
-        let mut index = Index::new();
-        let file_a = PathBuf::from("src/a.rs");
-        let file_b = PathBuf::from("src/b.rs");
-
-        index.update(FileRecord {
-            path: file_a.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("helper", &file_a)],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: file_b.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("helper", &file_b)],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        let from_a = resolve_same_file("helper", &file_a, &index);
-        assert!(from_a.is_some());
-        assert_eq!(from_a.unwrap().file, file_a);
-
-        let from_b = resolve_same_file("helper", &file_b, &index);
-        assert!(from_b.is_some());
-        assert_eq!(from_b.unwrap().file, file_b);
-
-        let not_found = resolve_same_file("nonexistent", &file_a, &index);
-        assert!(not_found.is_none());
-    }
-
-    #[test]
-    fn test_resolve_by_index_cross_file() {
-        let mut index = Index::new();
-        let file_a = PathBuf::from("src/a.rs");
-        let file_b = PathBuf::from("src/b.rs");
-
-        index.update(FileRecord {
-            path: file_a.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("func_a", &file_a)],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: file_b.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("func_b", &file_b)],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        let found_a = resolve_by_index("func_a", &index);
-        assert!(found_a.is_some());
-        assert_eq!(found_a.unwrap().file, file_a);
-
-        let found_b = resolve_by_index("func_b", &index);
-        assert!(found_b.is_some());
-        assert_eq!(found_b.unwrap().file, file_b);
-    }
-
-    #[test]
-    fn test_resolve_by_search_rust() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("lib.rs"),
-            "pub fn my_searched_function() {\n    println!(\"found\");\n}\n",
-        )
-        .unwrap();
-
-        let found = resolve_by_search("my_searched_function", dir.path()).unwrap();
-        assert!(found.is_some());
-        let def = found.unwrap();
-        assert_eq!(def.name, "my_searched_function");
-        assert!(def.file.ends_with("lib.rs"));
-    }
-
-    #[test]
-    fn test_resolve_by_search_python() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("utils.py"),
-            "def searched_python_func():\n    pass\n",
-        )
-        .unwrap();
-
-        let found = resolve_by_search("searched_python_func", dir.path()).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "searched_python_func");
-    }
-
-    #[test]
-    fn test_resolve_by_search_go() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("main.go"),
-            "package main\n\nfunc searchedGoFunc() {\n}\n",
-        )
-        .unwrap();
-
-        let found = resolve_by_search("searchedGoFunc", dir.path()).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "searchedGoFunc");
-    }
-
-    #[test]
-    fn test_resolve_by_search_typescript() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("index.ts"),
-            "function searchedTsFunc() {\n    return 42;\n}\n",
-        )
-        .unwrap();
-
-        let found = resolve_by_search("searchedTsFunc", dir.path()).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "searchedTsFunc");
-    }
-
-    #[test]
-    fn test_resolve_by_search_not_found() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(dir.path().join("empty.rs"), "// no functions here\n").unwrap();
-
-        let found = resolve_by_search("nonexistent_function", dir.path()).unwrap();
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn test_resolver_resolution_chain() {
-        let dir = TempDir::new().unwrap();
-        let mut index = Index::new();
-
-        let file_main = dir.path().join("main.rs");
-        let file_utils = dir.path().join("utils.rs");
-
-        fs::write(&file_main, "fn main() { helper(); }").unwrap();
-        fs::write(&file_utils, "pub fn helper() { nested(); }\npub fn nested() {}").unwrap();
-
-        index.update(FileRecord {
-            path: file_main.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("main", &file_main)],
-            calls: vec![Call {
-                callee: "helper".to_string(),
-                caller: Some("main".to_string()),
-                span: make_span(),
-                file: file_main.clone(),
-            }],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: file_utils.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("helper", &file_utils), make_def("nested", &file_utils)],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
-
-        let found = resolver.resolve("helper", &file_main).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().file, file_utils);
-
-        let same_file = resolver.resolve("nested", &file_utils).unwrap();
-        assert!(same_file.is_some());
-        assert_eq!(same_file.unwrap().file, file_utils);
-    }
-
-    #[test]
-    fn test_resolver_grep_fallback() {
-        let dir = TempDir::new().unwrap();
-        let index = Index::new();
-
-        fs::write(
-            dir.path().join("hidden.rs"),
-            "fn not_indexed_function() {\n    println!(\"hidden\");\n}\n",
-        )
-        .unwrap();
-
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
-        let from_file = dir.path().join("caller.rs");
-
-        let found = resolver.resolve("not_indexed_function", &from_file).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "not_indexed_function");
-
-        let discovered = resolver.files_to_index();
-        assert!(!discovered.is_empty());
-    }
-
-    #[test]
-    fn test_resolver_tracks_discovered_files() {
-        let dir = TempDir::new().unwrap();
-        let index = Index::new();
-
-        fs::write(dir.path().join("a.rs"), "fn discovered_a() {}").unwrap();
-        fs::write(dir.path().join("b.rs"), "fn discovered_b() {}").unwrap();
-
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
-        let from_file = dir.path().join("main.rs");
-
-        resolver.resolve("discovered_a", &from_file).unwrap();
-        resolver.resolve("discovered_b", &from_file).unwrap();
-
-        let discovered = resolver.files_to_index();
-        assert_eq!(discovered.len(), 2);
-
-        resolver.clear_discovered();
-        assert!(resolver.files_to_index().is_empty());
-    }
-
-    #[test]
-    fn test_resolver_with_imports() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        fs::create_dir_all(&src).unwrap();
-
-        fs::write(src.join("utils.rs"), "pub fn imported_helper() {}").unwrap();
-
-        let mut index = Index::new();
-        let main_file = dir.path().join("src/main.rs");
-
-        index.update(FileRecord {
-            path: src.join("utils.rs"),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("imported_helper", &src.join("utils.rs"))],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: main_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![],
-            calls: vec![],
-            imports: vec![Import {
-                module_path: "crate::utils::imported_helper".to_string(),
-                alias: None,
-                span: make_span(),
-                file: main_file.clone(),
-            }],
-        });
-
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
-
-        let found = resolver.resolve("imported_helper", &main_file).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "imported_helper");
-    }
-
-    #[test]
-    fn test_import_discovery_tracks_files_for_reindexing() {
-        let dir = TempDir::new().unwrap();
-        let src = dir.path().join("src");
-        let utils_dir = src.join("utils");
-        fs::create_dir_all(&utils_dir).unwrap();
-
-        fs::write(utils_dir.join("helper.rs"), "pub fn helper() {}").unwrap();
-
-        let mut index = Index::new();
-        let main_file = src.join("main.rs");
-
-        index.update(FileRecord {
-            path: main_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("main", &main_file)],
-            calls: vec![],
-            imports: vec![Import {
-                module_path: "crate::utils::helper".to_string(),
-                alias: None,
-                span: make_span(),
-                file: main_file.clone(),
-            }],
-        });
-
-        let resolver = Resolver::new(&index, dir.path().to_path_buf());
-
-        let found = resolver.resolve("helper", &main_file).unwrap();
-        assert!(found.is_some(), "grep fallback should find unindexed definition");
-        assert_eq!(found.unwrap().name, "helper");
-
-        let discovered = resolver.files_to_index();
-        assert!(
-            discovered.iter().any(|p| p.ends_with("helper.rs")),
-            "should track helper.rs for re-indexing"
-        );
-    }
-}
-
-mod call_graph_resolution {
+mod call_graph_tests {
     use super::*;
     use glimpse::code::index::{Call, Definition, DefinitionKind, FileRecord, Span};
     use tempfile::TempDir;
@@ -418,7 +83,7 @@ mod call_graph_resolution {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         let caller_id = graph.find_node("caller").unwrap();
         let callees = graph.get_callees(caller_id);
@@ -426,40 +91,6 @@ mod call_graph_resolution {
         assert_eq!(callees.len(), 1);
         assert_eq!(callees[0].definition.name, "callee");
         assert_eq!(callees[0].definition.file, file_b);
-    }
-
-    #[test]
-    fn test_graph_uses_grep_fallback_for_unindexed() {
-        let dir = TempDir::new().unwrap();
-        let file_caller = dir.path().join("caller.rs");
-        let file_hidden = dir.path().join("hidden.rs");
-
-        fs::write(&file_caller, "fn caller() { hidden_func(); }").unwrap();
-        fs::write(&file_hidden, "fn hidden_func() {}").unwrap();
-
-        let mut index = Index::new();
-
-        index.update(FileRecord {
-            path: file_caller.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![make_def("caller", &file_caller)],
-            calls: vec![Call {
-                callee: "hidden_func".to_string(),
-                caller: Some("caller".to_string()),
-                span: make_span(),
-                file: file_caller.clone(),
-            }],
-            imports: vec![],
-        });
-
-        let graph = CallGraph::build(&index, dir.path());
-
-        let caller_id = graph.find_node("caller").unwrap();
-        let callees = graph.get_callees(caller_id);
-
-        assert_eq!(callees.len(), 1);
-        assert_eq!(callees[0].definition.name, "hidden_func");
     }
 
     #[test]
@@ -507,7 +138,7 @@ mod call_graph_resolution {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         assert_eq!(graph.node_count(), 3);
 
@@ -568,7 +199,7 @@ mod call_graph_resolution {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         let entry_id = graph.find_node("entry").unwrap();
         let transitive = graph.get_transitive_callees(entry_id);
@@ -609,7 +240,7 @@ mod call_graph_resolution {
             imports: vec![],
         });
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         let caller_id = graph.find_node("caller").unwrap();
         let callees = graph.get_callees(caller_id);
@@ -682,7 +313,7 @@ fn write_file(_data: &str) {}
         index_file(&mut index, &extractor, &src.join("main.rs"), main_rs);
         index_file(&mut index, &extractor, &src.join("utils.rs"), utils_rs);
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         assert!(graph.node_count() >= 5);
 
@@ -740,7 +371,7 @@ def format_output(s):
         index_file(&mut index, &extractor, &dir.path().join("main.py"), main_py);
         index_file(&mut index, &extractor, &dir.path().join("utils.py"), utils_py);
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         if let Some(main_id) = graph.find_node("main") {
             let transitive = graph.get_transitive_callees(main_id);
@@ -792,7 +423,7 @@ function format(s: string): string {
         index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
         index_file(&mut index, &extractor, &dir.path().join("utils.ts"), utils_ts);
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         if let Some(main_id) = graph.find_node("main") {
             let callees = graph.get_callees(main_id);
@@ -838,7 +469,7 @@ type Config struct {
 
         index_file(&mut index, &extractor, &dir.path().join("main.go"), main_go);
 
-        let graph = CallGraph::build(&index, dir.path());
+        let graph = CallGraph::build(&index);
 
         if let Some(main_id) = graph.find_node("main") {
             let transitive = graph.get_transitive_callees(main_id);

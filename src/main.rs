@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 
 use crate::analyzer::process_directory;
 use crate::cli::{Cli, CodeArgs, Commands, FunctionTarget, IndexCommand};
@@ -271,7 +272,7 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
         save_index(&index, &root)?;
     }
 
-    let graph = CallGraph::build(&index, &root);
+    let graph = CallGraph::build(&index);
 
     let node_id = if let Some(ref file) = target.file {
         let file_path = root.join(file);
@@ -293,15 +294,15 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
         );
     };
 
+    let depth = args.depth.unwrap_or(1);
+    
     let definitions = if args.callers {
-        let callers = graph.get_transitive_callers(node_id);
-        let mut defs: Vec<_> = callers.iter().map(|n| &n.definition).collect();
-        if let Some(node) = graph.get_node(node_id) {
-            defs.push(&node.definition);
-        }
-        defs
+        graph.get_callers_to_depth(node_id, depth)
+            .into_iter()
+            .filter_map(|id| graph.get_node(id).map(|n| &n.definition))
+            .collect()
     } else {
-        graph.post_order_definitions(node_id)
+        graph.definitions_to_depth(node_id, depth)
     };
 
     let output = format_definitions(&definitions, &root)?;
@@ -377,6 +378,8 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
     Ok(())
 }
 
+const INDEX_CHUNK_SIZE: usize = 256;
+
 fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -400,70 +403,73 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
         })
         .collect();
 
-    let total = source_files.len();
     pb.finish_and_clear();
+
+    let stale_files: Vec<_> = source_files
+        .into_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let rel_path = path.strip_prefix(root).unwrap_or(path);
+            let ext = path.extension().and_then(|e| e.to_str())?;
+            if ext.is_empty() {
+                return None;
+            }
+            let (mtime, size) = file_fingerprint(path).ok()?;
+            if index.is_stale(rel_path, mtime, size) {
+                Some((path.to_path_buf(), rel_path.to_path_buf(), ext.to_string(), mtime, size))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let total = stale_files.len();
+    if total == 0 {
+        return Ok(0);
+    }
 
     let pb = ProgressBar::new(total as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len}")
             .expect("valid template")
             .progress_chars("#>-"),
     );
 
     let mut updated = 0;
 
-    for entry in source_files {
-        let path = entry.path();
-        let rel_path = path.strip_prefix(root).unwrap_or(path);
+    for chunk in stale_files.chunks(INDEX_CHUNK_SIZE) {
+        let records: Vec<FileRecord> = chunk
+            .par_iter()
+            .filter_map(|(path, rel_path, ext, mtime, size)| {
+                let extractor = Extractor::from_extension(ext).ok()?;
+                let source = fs::read(path).ok()?;
 
-        pb.set_message(format!("{}", rel_path.display()));
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(extractor.language()).ok()?;
+                let tree = parser.parse(&source, None)?;
 
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+                let definitions = extractor.extract_definitions(&tree, &source, rel_path);
+                let calls = extractor.extract_calls(&tree, &source, rel_path);
+                let imports = extractor.extract_imports(&tree, &source, rel_path);
 
-        let (mtime, size) = file_fingerprint(path)?;
-
-        if !index.is_stale(rel_path, mtime, size) {
-            pb.inc(1);
-            continue;
-        }
-
-        let extractor = match Extractor::from_extension(ext) {
-            Ok(e) => e,
-            Err(_) => {
                 pb.inc(1);
-                continue;
-            }
-        };
 
-        let source = fs::read(path).with_context(|| format!("failed to read: {}", path.display()))?;
+                Some(FileRecord {
+                    path: rel_path.to_path_buf(),
+                    mtime: *mtime,
+                    size: *size,
+                    definitions,
+                    calls,
+                    imports,
+                })
+            })
+            .collect();
 
-        let mut parser = tree_sitter::Parser::new();
-        parser.set_language(extractor.language())?;
-
-        let Some(tree) = parser.parse(&source, None) else {
-            pb.inc(1);
-            continue;
-        };
-
-        let definitions = extractor.extract_definitions(&tree, &source, rel_path);
-        let calls = extractor.extract_calls(&tree, &source, rel_path);
-        let imports = extractor.extract_imports(&tree, &source, rel_path);
-
-        index.update(FileRecord {
-            path: rel_path.to_path_buf(),
-            mtime,
-            size,
-            definitions,
-            calls,
-            imports,
-        });
-
-        updated += 1;
-        pb.inc(1);
+        updated += records.len();
+        for record in records {
+            index.update(record);
+        }
     }
 
     pb.finish_and_clear();
