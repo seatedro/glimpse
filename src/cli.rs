@@ -107,6 +107,10 @@ pub enum IndexCommand {
         /// Force rebuild (ignore existing index)
         #[arg(short, long)]
         force: bool,
+
+        /// Use LSP for precise call resolution (slower but more accurate)
+        #[arg(long)]
+        precise: bool,
     },
 
     /// Clear the index for a project

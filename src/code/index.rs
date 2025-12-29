@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const INDEX_FILE: &str = "index.bin";
-pub const INDEX_VERSION: u32 = 2;
+pub const INDEX_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
@@ -26,6 +26,16 @@ pub struct Definition {
     pub kind: DefinitionKind,
     pub span: Span,
     pub file: PathBuf,
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedCall {
+    pub target_file: PathBuf,
+    pub target_name: String,
+    pub target_span: Span,
+    pub signature: Option<String>,
+    pub receiver_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +58,7 @@ pub struct Call {
     pub span: Span,
     pub file: PathBuf,
     pub caller: Option<String>,
+    pub resolved: Option<ResolvedCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +219,7 @@ mod tests {
                     end_line: 10,
                 },
                 file: PathBuf::from(format!("src/{}.rs", name)),
+                signature: None,
             }],
             calls: vec![Call {
                 callee: "other_fn".to_string(),
@@ -220,6 +232,7 @@ mod tests {
                 },
                 file: PathBuf::from(format!("src/{}.rs", name)),
                 caller: Some(format!("{}_fn", name)),
+                resolved: None,
             }],
             imports: vec![Import {
                 module_path: "std::fs".to_string(),

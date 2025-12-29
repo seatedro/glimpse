@@ -157,6 +157,7 @@ impl Extractor {
                     kind,
                     span: node_to_span(&node),
                     file: path.to_path_buf(),
+                    signature: None,
                 });
             }
         }
@@ -194,6 +195,7 @@ impl Extractor {
                     span: node_to_span(&node),
                     file: path.to_path_buf(),
                     caller,
+                    resolved: None,
                 });
             }
         }

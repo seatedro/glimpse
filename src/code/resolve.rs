@@ -246,6 +246,7 @@ mod tests {
                 end_line: 3,
             },
             file: PathBuf::from(file),
+            signature: None,
         }
     }
 

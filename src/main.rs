@@ -17,6 +17,7 @@ use glimpse::code::graph::CallGraph;
 use glimpse::code::index::{
     clear_index, file_fingerprint, load_index, save_index, FileRecord, Index,
 };
+use glimpse::code::lsp::LspResolver;
 use glimpse::fetch::{GitProcessor, UrlProcessor};
 use glimpse::{
     get_config_path, is_source_file, load_config, load_repo_config, save_config, save_repo_config,
@@ -270,8 +271,16 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
 
     let mut index = load_index(&root)?.unwrap_or_else(Index::new);
     let needs_update = index_directory(&root, &mut index)?;
+    let mut needs_save = needs_update > 0;
 
-    if needs_update > 0 {
+    if args.precise {
+        let resolved = resolve_calls_with_lsp(&root, &mut index)?;
+        if resolved > 0 {
+            needs_save = true;
+        }
+    }
+
+    if needs_save {
         save_index(&index, &root)?;
     }
 
@@ -320,7 +329,11 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
 
 fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
     match cmd {
-        IndexCommand::Build { path, force } => {
+        IndexCommand::Build {
+            path,
+            force,
+            precise,
+        } => {
             let root = path.canonicalize().unwrap_or_else(|_| path.clone());
 
             let mut index = if *force {
@@ -330,21 +343,30 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
             };
 
             let updated = index_directory(&root, &mut index)?;
+
+            if *precise {
+                let resolved = resolve_calls_with_lsp(&root, &mut index)?;
+                if resolved > 0 {
+                    eprintln!("Resolved {} calls with LSP", resolved);
+                }
+            }
+
             save_index(&index, &root)?;
 
             let file_count = index.files.len();
             let def_count = index.definitions().count();
             let call_count = index.calls().count();
+            let resolved_count = index.calls().filter(|c| c.resolved.is_some()).count();
 
-            if updated > 0 {
+            if updated > 0 || *precise {
                 eprintln!(
-                    "Index updated: {} files ({} updated), {} definitions, {} calls",
-                    file_count, updated, def_count, call_count
+                    "Index updated: {} files ({} updated), {} definitions, {} calls ({} resolved)",
+                    file_count, updated, def_count, call_count, resolved_count
                 );
             } else {
                 eprintln!(
-                    "Index up to date: {} files, {} definitions, {} calls",
-                    file_count, def_count, call_count
+                    "Index up to date: {} files, {} definitions, {} calls ({} resolved)",
+                    file_count, def_count, call_count, resolved_count
                 );
             }
         }
@@ -388,7 +410,8 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
             .template("{spinner:.green} {msg}")
             .expect("valid template"),
     );
-    pb.set_message("Scanning files...");
+    pb.set_message("scanning files...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let source_files: Vec<_> = ignore::WalkBuilder::new(root)
         .hidden(false)
@@ -404,7 +427,10 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
         })
         .collect();
 
-    pb.finish_and_clear();
+    pb.set_message(format!(
+        "found {} source files, checking for changes...",
+        source_files.len()
+    ));
 
     let stale_files: Vec<_> = source_files
         .into_iter()
@@ -430,6 +456,8 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
         })
         .collect();
 
+    pb.finish_and_clear();
+
     let total = stale_files.len();
     if total == 0 {
         return Ok(0);
@@ -438,10 +466,11 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
     let pb = ProgressBar::new(total as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len}")
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
             .expect("valid template")
             .progress_chars("#>-"),
     );
+    pb.set_message("indexing...");
 
     let mut updated = 0;
 
@@ -481,6 +510,79 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
 
     pb.finish_and_clear();
     Ok(updated)
+}
+
+fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
+    let unresolved_count: usize = index
+        .files
+        .values()
+        .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+        .sum();
+
+    if unresolved_count == 0 {
+        return Ok(0);
+    }
+
+    let pb = ProgressBar::new(unresolved_count as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .expect("valid template")
+            .progress_chars("#>-"),
+    );
+    pb.set_message("resolving calls with LSP...");
+
+    let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
+    let mut resolved = 0;
+
+    let file_paths: Vec<_> = index.files.keys().cloned().collect();
+
+    for file_path in file_paths {
+        let Some(record) = index.files.get(&file_path) else {
+            continue;
+        };
+
+        let calls_to_resolve: Vec<_> = record
+            .calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.resolved.is_none())
+            .map(|(i, c)| (i, c.clone()))
+            .collect();
+
+        if calls_to_resolve.is_empty() {
+            continue;
+        }
+
+        let mut resolutions = Vec::new();
+
+        for (call_idx, call) in &calls_to_resolve {
+            pb.inc(1);
+
+            if let Some(resolved_call) = lsp_resolver.resolve_call_full(call, index) {
+                resolutions.push((*call_idx, resolved_call));
+            }
+        }
+
+        if let Some(record) = index.files.get_mut(&file_path) {
+            for (call_idx, resolved_call) in resolutions {
+                if call_idx < record.calls.len() {
+                    record.calls[call_idx].resolved = Some(resolved_call);
+                    resolved += 1;
+                }
+            }
+        }
+    }
+
+    pb.finish_and_clear();
+
+    let stats = lsp_resolver.stats();
+    eprintln!(
+        "LSP stats: {} resolved, {} external, {} no definition, {} not indexed, {} no match",
+        stats.resolved, stats.external, stats.no_definition, stats.not_indexed, stats.no_match
+    );
+
+    Ok(resolved)
 }
 
 fn format_definitions(

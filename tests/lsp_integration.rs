@@ -14,7 +14,10 @@ fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &st
     parser.set_language(extractor.language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
 
-    let rel_path = path.file_name().map(PathBuf::from).unwrap_or(path.to_path_buf());
+    let rel_path = path
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or(path.to_path_buf());
     let (mtime, size) = file_fingerprint(path).unwrap_or((0, source.len() as u64));
 
     let record = FileRecord {
@@ -93,14 +96,14 @@ edition = "2021"
 
         let mut index = Index::new();
         let extractor = Extractor::new("rust").unwrap();
-        
+
         let main_rs_path = src.join("main.rs");
         let rel_path = main_rs_path.strip_prefix(dir.path()).unwrap();
-        
+
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(extractor.language()).unwrap();
         let tree = parser.parse(main_rs, None).unwrap();
-        
+
         let record = FileRecord {
             path: rel_path.to_path_buf(),
             mtime: 0,
@@ -109,11 +112,25 @@ edition = "2021"
             calls: extractor.extract_calls(&tree, main_rs.as_bytes(), rel_path),
             imports: extractor.extract_imports(&tree, main_rs.as_bytes(), rel_path),
         };
-        
+
         eprintln!("Index record path: {:?}", record.path);
-        eprintln!("Definitions: {:?}", record.definitions.iter().map(|d| (&d.name, &d.file)).collect::<Vec<_>>());
-        eprintln!("Calls: {:?}", record.calls.iter().map(|c| (&c.callee, &c.file, c.span.start_line)).collect::<Vec<_>>());
-        
+        eprintln!(
+            "Definitions: {:?}",
+            record
+                .definitions
+                .iter()
+                .map(|d| (&d.name, &d.file))
+                .collect::<Vec<_>>()
+        );
+        eprintln!(
+            "Calls: {:?}",
+            record
+                .calls
+                .iter()
+                .map(|c| (&c.callee, &c.file, c.span.start_line))
+                .collect::<Vec<_>>()
+        );
+
         index.update(record);
 
         let calls = collect_calls(&index);
@@ -126,7 +143,10 @@ edition = "2021"
         wait_for_lsp_ready(&mut resolver, &calls, &index);
 
         if let Some(call) = helper_call {
-            eprintln!("Resolving call: callee={}, file={:?}, line={}", call.callee, call.file, call.span.start_line);
+            eprintln!(
+                "Resolving call: callee={}, file={:?}, line={}",
+                call.callee, call.file, call.span.start_line
+            );
             let def = resolver.resolve_call(call, &index);
             if def.is_none() {
                 eprintln!("Resolution failed! Check LSP logs.");
@@ -284,7 +304,12 @@ func Process() {
         let mut index = Index::new();
         let extractor = Extractor::new("go").unwrap();
         index_file(&mut index, &extractor, &dir.path().join("main.go"), main_go);
-        index_file(&mut index, &extractor, &utils_dir.join("utils.go"), utils_go);
+        index_file(
+            &mut index,
+            &extractor,
+            &utils_dir.join("utils.go"),
+            utils_go,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "Process");
@@ -381,7 +406,12 @@ if __name__ == "__main__":
         let mut index = Index::new();
         let extractor = Extractor::new("python").unwrap();
         index_file(&mut index, &extractor, &dir.path().join("main.py"), main_py);
-        index_file(&mut index, &extractor, &dir.path().join("utils.py"), utils_py);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("utils.py"),
+            utils_py,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -444,7 +474,10 @@ main();
         index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
 
         let calls = collect_calls(&index);
-        assert!(!calls.is_empty(), "Should extract calls from TypeScript code");
+        assert!(
+            !calls.is_empty(),
+            "Should extract calls from TypeScript code"
+        );
 
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
@@ -500,7 +533,12 @@ main();
         let mut index = Index::new();
         let extractor = Extractor::new("typescript").unwrap();
         index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
-        index_file(&mut index, &extractor, &dir.path().join("utils.ts"), utils_ts);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("utils.ts"),
+            utils_ts,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -562,7 +600,10 @@ main();
         index_file(&mut index, &extractor, &dir.path().join("main.js"), main_js);
 
         let calls = collect_calls(&index);
-        assert!(!calls.is_empty(), "Should extract calls from JavaScript code");
+        assert!(
+            !calls.is_empty(),
+            "Should extract calls from JavaScript code"
+        );
 
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
@@ -762,7 +803,12 @@ void helper() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.cpp"), main_cpp);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("main.cpp"),
+            main_cpp,
+        );
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from C++ code");
@@ -823,7 +869,12 @@ int main() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.cpp"), main_cpp);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("main.cpp"),
+            main_cpp,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -847,9 +898,12 @@ mod lsp_availability {
     #[test]
     fn test_check_lsp_availability_returns_results() {
         let availability = check_lsp_availability();
-        
-        assert!(!availability.is_empty(), "Should return availability for at least one language");
-        
+
+        assert!(
+            !availability.is_empty(),
+            "Should return availability for at least one language"
+        );
+
         for (lang, info) in &availability {
             println!(
                 "  {}: available={}, location={:?}, can_install={}, method={:?}",
@@ -861,14 +915,17 @@ mod lsp_availability {
     #[test]
     fn test_rust_analyzer_detection() {
         let availability = check_lsp_availability();
-        
+
         if let Some(info) = availability.get("rust") {
             println!(
                 "rust-analyzer: available={}, location={:?}, can_install={}",
                 info.available, info.location, info.can_auto_install
             );
             if info.available {
-                assert!(info.location.is_some(), "If available, should have location");
+                assert!(
+                    info.location.is_some(),
+                    "If available, should have location"
+                );
             }
         }
     }
@@ -876,7 +933,7 @@ mod lsp_availability {
     #[test]
     fn test_npm_packages_can_be_installed() {
         let availability = check_lsp_availability();
-        
+
         if let Some(info) = availability.get("typescript") {
             println!(
                 "typescript-language-server: available={}, can_install={}, method={:?}",
@@ -901,7 +958,7 @@ mod lsp_availability {
     #[test]
     fn test_go_package_can_be_installed() {
         let availability = check_lsp_availability();
-        
+
         if let Some(info) = availability.get("go") {
             println!(
                 "gopls: available={}, can_install={}, method={:?}",

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
+use indicatif::{ProgressBar, ProgressStyle};
 use lsp_types::{
     ClientCapabilities, DidOpenTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse,
     InitializeParams, InitializedParams, Position, TextDocumentIdentifier,
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::grammar::{lsp_dir, LspConfig, Registry};
-use super::index::{Call, Definition, Index};
+use super::index::{Call, Definition, Index, ResolvedCall};
 
 fn current_target() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -103,9 +104,8 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     };
 
     let version = if lsp.binary == "zls" {
-        detect_zig_version(root).with_context(|| {
-            "failed to detect zig version. Install zig or install zls manually"
-        })?
+        detect_zig_version(root)
+            .with_context(|| "failed to detect zig version. Install zig or install zls manually")?
     } else {
         lsp.version
             .clone()
@@ -125,8 +125,6 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
         .replace("{version}", &version)
         .replace("{target}", target_name);
 
-    eprintln!("Downloading {} from {}...", lsp.binary, url);
-
     let dir = lsp_dir();
     fs::create_dir_all(&dir)?;
 
@@ -137,7 +135,28 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
         bail!("download failed with status: {}", response.status());
     }
 
-    let bytes = response.bytes()?;
+    let total_size = response.content_length().unwrap_or(0);
+    let pb = ProgressBar::new(total_size);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) downloading {msg}")
+            .expect("valid template")
+            .progress_chars("#>-"),
+    );
+    pb.set_message(lsp.binary.clone());
+
+    let mut bytes = Vec::new();
+    let mut reader = response;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..n]);
+        pb.set_position(bytes.len() as u64);
+    }
+    pb.finish_and_clear();
     let archive_type = lsp.archive.as_deref().unwrap_or("gz");
 
     let final_path = lsp_binary_path(lsp);
@@ -279,10 +298,7 @@ fn create_wrapper_script(wrapper_path: &Path, target_path: &Path) -> Result<()> 
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let script = format!(
-            "#!/bin/sh\nexec \"{}\" \"$@\"\n",
-            target_path.display()
-        );
+        let script = format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", target_path.display());
         fs::write(wrapper_path, script)?;
 
         let mut perms = fs::metadata(wrapper_path)?.permissions();
@@ -292,10 +308,7 @@ fn create_wrapper_script(wrapper_path: &Path, target_path: &Path) -> Result<()> 
 
     #[cfg(windows)]
     {
-        let script = format!(
-            "@echo off\r\n\"{}\" %*\r\n",
-            target_path.display()
-        );
+        let script = format!("@echo off\r\n\"{}\" %*\r\n", target_path.display());
         let wrapper_cmd = wrapper_path.with_extension("cmd");
         fs::write(&wrapper_cmd, script)?;
     }
@@ -497,13 +510,21 @@ impl LspClient {
         self.send_message(&msg)
     }
 
-    fn wait_for_ready(&mut self, path: &Path, max_attempts: u32) -> Result<bool> {
+    fn wait_for_ready(
+        &mut self,
+        path: &Path,
+        max_attempts: u32,
+        pb: Option<&ProgressBar>,
+    ) -> Result<bool> {
         use std::thread;
         use std::time::Duration;
 
         let uri = path_to_uri(path)?;
 
-        // First wait for basic syntax analysis (documentSymbol)
+        if let Some(pb) = pb {
+            pb.set_message("waiting for syntax analysis...");
+        }
+
         for _ in 0..10 {
             let params = lsp_types::DocumentSymbolParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -517,12 +538,14 @@ impl LspClient {
             }
         }
 
-        // Then wait for semantic analysis (hover on a known symbol)
-        // This indicates rust-analyzer has finished loading the project
+        if let Some(pb) = pb {
+            pb.set_message("waiting for semantic analysis...");
+        }
+
         for attempt in 0..max_attempts {
             let hover_params = json!({
                 "textDocument": { "uri": uri.as_str() },
-                "position": { "line": 0, "character": 4 }  // "mod" keyword
+                "position": { "line": 0, "character": 4 }
             });
 
             match self.send_request("textDocument/hover", hover_params) {
@@ -633,11 +656,47 @@ impl LspClient {
         }
     }
 
+    fn hover(&mut self, path: &Path, line: u32, character: u32) -> Result<Option<String>> {
+        let uri = path_to_uri(path)?;
+
+        let params = json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": line, "character": character }
+        });
+
+        let result = self.send_request("textDocument/hover", params)?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let hover: lsp_types::Hover = serde_json::from_value(result)?;
+
+        let content = match hover.contents {
+            lsp_types::HoverContents::Scalar(marked) => extract_marked_string(&marked),
+            lsp_types::HoverContents::Array(arr) => arr
+                .into_iter()
+                .map(|m| extract_marked_string(&m))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            lsp_types::HoverContents::Markup(markup) => markup.value,
+        };
+
+        Ok(Some(content))
+    }
+
     fn shutdown(&mut self) -> Result<()> {
         self.send_request("shutdown", json!(null))?;
         self.send_notification("exit", json!(null))?;
         let _ = self.process.wait();
         Ok(())
+    }
+}
+
+fn extract_marked_string(marked: &lsp_types::MarkedString) -> String {
+    match marked {
+        lsp_types::MarkedString::String(s) => s.clone(),
+        lsp_types::MarkedString::LanguageString(ls) => ls.value.clone(),
     }
 }
 
@@ -647,10 +706,21 @@ impl Drop for LspClient {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct LspStats {
+    pub resolved: usize,
+    pub no_definition: usize,
+    pub external: usize,
+    pub not_indexed: usize,
+    pub no_match: usize,
+}
+
 pub struct LspResolver {
     clients: HashMap<String, LspClient>,
     root: PathBuf,
     file_cache: HashMap<PathBuf, String>,
+    progress: Option<ProgressBar>,
+    stats: LspStats,
 }
 
 impl LspResolver {
@@ -659,7 +729,35 @@ impl LspResolver {
             clients: HashMap::new(),
             root: root.to_path_buf(),
             file_cache: HashMap::new(),
+            progress: None,
+            stats: LspStats::default(),
         }
+    }
+
+    pub fn with_progress(root: &Path, pb: ProgressBar) -> Self {
+        Self {
+            clients: HashMap::new(),
+            root: root.to_path_buf(),
+            file_cache: HashMap::new(),
+            progress: Some(pb),
+            stats: LspStats::default(),
+        }
+    }
+
+    pub fn stats(&self) -> &LspStats {
+        &self.stats
+    }
+
+    pub fn set_progress(&mut self, pb: Option<ProgressBar>) {
+        self.progress = pb;
+    }
+
+    fn find_sample_file(&self, ext: &str) -> Option<PathBuf> {
+        let pattern = format!("**/*.{}", ext);
+        glob::glob(&self.root.join(&pattern).to_string_lossy())
+            .ok()?
+            .filter_map(|p| p.ok())
+            .find(|p| !p.to_string_lossy().contains("/target/"))
     }
 
     fn get_or_create_client(&mut self, ext: &str) -> Result<&mut LspClient> {
@@ -676,8 +774,26 @@ impl LspResolver {
         let key = lsp_config.binary.clone();
 
         if !self.clients.contains_key(&key) {
+            if let Some(ref pb) = self.progress {
+                pb.set_message(format!("starting {}...", lsp_config.binary));
+            }
+
             let mut client = LspClient::new(lsp_config, &self.root)?;
             client.initialize()?;
+
+            let sample_file = self.find_sample_file(&ext);
+            if let Some(ref sample) = sample_file {
+                if let Ok(content) = std::fs::read_to_string(sample) {
+                    let lang_id = Self::language_id_for_ext(&ext);
+                    let _ = client.open_file(sample, &content, lang_id);
+                    let _ = client.wait_for_ready(sample, 60, self.progress.as_ref());
+                }
+            }
+
+            if let Some(ref pb) = self.progress {
+                pb.set_message(format!("{} ready", lsp_config.binary));
+            }
+
             self.clients.insert(key.clone(), client);
         }
 
@@ -713,8 +829,8 @@ impl LspResolver {
         }
     }
 
-    pub fn resolve_call(&mut self, call: &Call, index: &Index) -> Option<Definition> {
-        let ext = call.file.extension()?.to_str()?.to_string();
+    pub fn resolve_call_full(&mut self, call: &Call, index: &Index) -> Option<ResolvedCall> {
+        let ext = call.file.extension().and_then(|e| e.to_str())?.to_string();
         let abs_path = self.root.join(&call.file);
         let language_id = Self::language_id_for_ext(&ext);
         let callee = call.callee.clone();
@@ -731,27 +847,96 @@ impl LspResolver {
         let col = line_content.find(&callee).unwrap_or(0) as u32;
 
         let client = self.get_or_create_client(&ext).ok()?;
+        client.open_file(&abs_path, &content, language_id).ok()?;
 
-        if client.open_file(&abs_path, &content, language_id).is_err() {
-            return None;
-        }
+        let signature = client
+            .hover(&abs_path, start_line_idx as u32, col)
+            .ok()
+            .flatten()
+            .and_then(|h| extract_signature(&h));
+
+        let receiver_type = call.qualifier.as_ref().and_then(|_| {
+            let qualifier_col = line_content.find(call.qualifier.as_deref()?)?;
+            client
+                .hover(&abs_path, start_line_idx as u32, qualifier_col as u32)
+                .ok()
+                .flatten()
+                .and_then(|h| extract_type(&h))
+        });
 
         let location = client
             .goto_definition(&abs_path, start_line_idx as u32, col)
-            .ok()??;
+            .ok()
+            .flatten();
+
+        let location = match location {
+            Some(loc) => loc,
+            None => {
+                self.stats.no_definition += 1;
+                return None;
+            }
+        };
 
         let def_path = uri_to_path(&location.uri)?;
+
         let root = self.root.clone();
-        let rel_path = def_path.strip_prefix(&root).ok()?.to_path_buf();
+        let rel_path = match def_path.strip_prefix(&root) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => {
+                self.stats.external += 1;
+                return None;
+            }
+        };
 
         let start_line = location.range.start.line as usize + 1;
         let end_line = location.range.end.line as usize + 1;
 
-        let record = index.get(&rel_path)?;
-        record
+        let record = match index.get(&rel_path) {
+            Some(r) => r,
+            None => {
+                self.stats.not_indexed += 1;
+                return None;
+            }
+        };
+
+        let def = match record
             .definitions
             .iter()
             .find(|d| d.span.start_line <= start_line && d.span.end_line >= end_line)
+        {
+            Some(d) => d,
+            None => {
+                self.stats.no_match += 1;
+                return None;
+            }
+        };
+
+        self.stats.resolved += 1;
+        Some(ResolvedCall {
+            target_file: rel_path,
+            target_name: def.name.clone(),
+            target_span: def.span.clone(),
+            signature,
+            receiver_type,
+        })
+    }
+
+    pub fn resolve_call(&mut self, call: &Call, index: &Index) -> Option<Definition> {
+        if let Some(ref resolved) = call.resolved {
+            return index
+                .get(&resolved.target_file)?
+                .definitions
+                .iter()
+                .find(|d| d.name == resolved.target_name)
+                .cloned();
+        }
+
+        let resolved = self.resolve_call_full(call, index)?;
+        index
+            .get(&resolved.target_file)?
+            .definitions
+            .iter()
+            .find(|d| d.name == resolved.target_name)
             .cloned()
     }
 
@@ -770,6 +955,51 @@ impl LspResolver {
 
         results
     }
+}
+
+fn extract_signature(hover_content: &str) -> Option<String> {
+    let lines: Vec<&str> = hover_content.lines().collect();
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn ")
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("function ")
+            || trimmed.starts_with("func ")
+        {
+            return Some(trimmed.to_string());
+        }
+        if trimmed.contains("->") || trimmed.contains("=>") {
+            return Some(trimmed.to_string());
+        }
+    }
+    lines.first().map(|s| s.trim().to_string())
+}
+
+fn extract_type(hover_content: &str) -> Option<String> {
+    let content = hover_content.trim();
+    if content.is_empty() {
+        return None;
+    }
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("let ") || trimmed.starts_with("const ") {
+            if let Some(colon_pos) = trimmed.find(':') {
+                let type_part = trimmed[colon_pos + 1..].trim();
+                let type_end = type_part.find('=').unwrap_or(type_part.len());
+                return Some(type_part[..type_end].trim().to_string());
+            }
+        }
+        if !trimmed.starts_with("fn ") && !trimmed.starts_with("def ") {
+            if let Some(first_line) = trimmed.split('\n').next() {
+                return Some(first_line.to_string());
+            }
+        }
+    }
+    Some(content.lines().next()?.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -922,7 +1152,7 @@ mod integration_tests {
             .expect("failed to open file");
 
         client
-            .wait_for_ready(&test_file, 30)
+            .wait_for_ready(&test_file, 30, None)
             .expect("wait_for_ready failed");
 
         // Line 61: ".filter(|path| is_url_or_git(path))"

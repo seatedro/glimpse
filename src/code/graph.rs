@@ -56,7 +56,18 @@ impl CallGraph {
                 continue;
             };
 
-            let callee_def = resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file);
+            let callee_def = if let Some(ref resolved) = call.resolved {
+                index
+                    .get(&resolved.target_file)
+                    .and_then(|r| {
+                        r.definitions
+                            .iter()
+                            .find(|d| d.name == resolved.target_name)
+                    })
+                    .cloned()
+            } else {
+                resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file)
+            };
 
             let callee_id = if let Some(def) = callee_def {
                 graph
@@ -73,7 +84,6 @@ impl CallGraph {
     }
 
     pub fn build_with_lsp(index: &Index, root: &Path) -> Self {
-        let mut lsp_resolver = LspResolver::new(root);
         let heuristic_resolver = Resolver::with_strict(index, false);
         let mut graph = CallGraph::new();
 
@@ -91,10 +101,15 @@ impl CallGraph {
         let pb = ProgressBar::new(total as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} resolving calls")
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
                 .expect("valid template")
                 .progress_chars("#>-"),
         );
+        pb.set_message("initializing LSP...");
+
+        let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
+
+        pb.set_message("resolving calls");
 
         for call in &calls {
             pb.inc(1);
@@ -108,9 +123,9 @@ impl CallGraph {
                 continue;
             };
 
-            let callee_def = lsp_resolver
-                .resolve_call(call, index)
-                .or_else(|| heuristic_resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file));
+            let callee_def = lsp_resolver.resolve_call(call, index).or_else(|| {
+                heuristic_resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file)
+            });
 
             let callee_id = if let Some(def) = callee_def {
                 graph
@@ -412,6 +427,7 @@ mod tests {
             kind: DefinitionKind::Function,
             span: make_span(),
             file: PathBuf::from(file),
+            signature: None,
         }
     }
 
@@ -422,6 +438,7 @@ mod tests {
             span: make_span(),
             file: PathBuf::from(file),
             caller: caller.map(|s| s.to_string()),
+            resolved: None,
         }
     }
 

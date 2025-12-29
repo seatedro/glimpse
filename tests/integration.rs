@@ -46,6 +46,7 @@ mod call_graph_tests {
             kind: DefinitionKind::Function,
             span: make_span(),
             file: file.to_path_buf(),
+            signature: None,
         }
     }
 
@@ -71,6 +72,7 @@ mod call_graph_tests {
                 caller: Some("caller".to_string()),
                 span: make_span(),
                 file: file_a.clone(),
+                resolved: None,
             }],
             imports: vec![],
         });
@@ -136,6 +138,7 @@ mod call_graph_tests {
                 caller: Some("main".to_string()),
                 span: make_span(),
                 file: file_main.clone(),
+                resolved: None,
             }],
             imports: vec![],
         });
@@ -175,6 +178,7 @@ mod call_graph_tests {
                 caller: Some("entry".to_string()),
                 span: make_span(),
                 file: file_a.clone(),
+                resolved: None,
             }],
             imports: vec![],
         });
@@ -190,6 +194,7 @@ mod call_graph_tests {
                 caller: Some("middle".to_string()),
                 span: make_span(),
                 file: file_b.clone(),
+                resolved: None,
             }],
             imports: vec![],
         });
@@ -244,6 +249,7 @@ mod call_graph_tests {
                 caller: Some("caller".to_string()),
                 span: make_span(),
                 file: file_a.clone(),
+                resolved: None,
             }],
             imports: vec![],
         });
