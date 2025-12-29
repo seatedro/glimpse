@@ -513,11 +513,11 @@ impl<'a> Resolver<'a> {
             return Ok(Some(def));
         }
 
-        if let Some(def) = self.resolve_via_imports(callee, from_file) {
+        if let Some(def) = resolve_by_index(callee, self.index) {
             return Ok(Some(def));
         }
 
-        if let Some(def) = resolve_by_index(callee, self.index) {
+        if let Some(def) = self.resolve_via_imports(callee, from_file) {
             return Ok(Some(def));
         }
 
@@ -547,13 +547,9 @@ impl<'a> Resolver<'a> {
             }
 
             if let Some(resolved) = resolve_relative(&import.module_path, from_file, ext) {
+                self.discovered_files.borrow_mut().insert(resolved.clone());
                 if let Some(def) = self.find_def_in_file(&resolved, callee) {
                     return Some(def);
-                }
-                if let Some(target_record) = self.index.get(&resolved) {
-                    if let Some(def) = target_record.definitions.first() {
-                        return Some(def.clone());
-                    }
                 }
             }
 
@@ -562,11 +558,6 @@ impl<'a> Resolver<'a> {
                 self.discovered_files.borrow_mut().insert(resolved.clone());
                 if let Some(def) = self.find_def_in_file(&resolved, callee) {
                     return Some(def);
-                }
-                if let Some(target_record) = self.index.get(&resolved) {
-                    if let Some(def) = target_record.definitions.first() {
-                        return Some(def.clone());
-                    }
                 }
             }
         }
