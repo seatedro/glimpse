@@ -386,10 +386,11 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
     );
     pb.set_message("Scanning files...");
 
-    let source_files: Vec<_> = walkdir::WalkDir::new(root)
-        .into_iter()
+    let source_files: Vec<_> = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .build()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         .filter(|e| is_source_file(e.path()))
         .filter(|e| {
             e.path()
