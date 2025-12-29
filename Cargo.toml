@@ -49,6 +49,8 @@ lsp-types = "0.97"
 which = "8.0"
 flate2 = "1.0"
 zip = "2.2"
+tar = "0.4"
+xz2 = "0.1"
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }

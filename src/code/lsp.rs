@@ -75,13 +75,41 @@ fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     url.to_file_path().ok()
 }
 
-fn download_and_extract(lsp: &LspConfig) -> Result<PathBuf> {
+fn detect_zig_version_from_zon(root: &Path) -> Option<String> {
+    let zon_path = root.join("build.zig.zon");
+    let content = fs::read_to_string(zon_path).ok()?;
+    let re = regex::Regex::new(r#"\.minimum_zig_version\s*=\s*"([^"]+)""#).ok()?;
+    let caps = re.captures(&content)?;
+    Some(caps.get(1)?.as_str().to_string())
+}
+
+fn detect_zig_version(root: &Path) -> Option<String> {
+    if let Ok(output) = Command::new("zig").arg("version").output() {
+        if output.status.success() {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            let version = version_str.trim();
+            if let Some(base) = version.split('-').next() {
+                return Some(base.to_string());
+            }
+        }
+    }
+
+    detect_zig_version_from_zon(root)
+}
+
+fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let Some(ref url_template) = lsp.url_template else {
         bail!("no download URL configured for {}", lsp.binary);
     };
 
-    let Some(ref version) = lsp.version else {
-        bail!("no version configured for {}", lsp.binary);
+    let version = if lsp.binary == "zls" {
+        detect_zig_version(root).with_context(|| {
+            "failed to detect zig version. Install zig or install zls manually"
+        })?
+    } else {
+        lsp.version
+            .clone()
+            .with_context(|| format!("no version configured for {}", lsp.binary))?
     };
 
     let target = current_target();
@@ -94,7 +122,7 @@ fn download_and_extract(lsp: &LspConfig) -> Result<PathBuf> {
     };
 
     let url = url_template
-        .replace("{version}", version)
+        .replace("{version}", &version)
         .replace("{target}", target_name);
 
     eprintln!("Downloading {} from {}...", lsp.binary, url);
@@ -120,12 +148,36 @@ fn download_and_extract(lsp: &LspConfig) -> Result<PathBuf> {
             let mut output = File::create(&final_path)?;
             std::io::copy(&mut decoder, &mut output)?;
         }
+        "tar.xz" => {
+            let decoder = xz2::read::XzDecoder::new(&bytes[..]);
+            let mut archive = tar::Archive::new(decoder);
+
+            let binary_name = format!("{}{}", lsp.binary, binary_extension());
+            let mut found = false;
+
+            for entry in archive.entries()? {
+                let mut entry = entry?;
+                let path = entry.path()?;
+                if let Some(name) = path.file_name() {
+                    if name == binary_name.as_str() {
+                        let mut output = File::create(&final_path)?;
+                        std::io::copy(&mut entry, &mut output)?;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if !found {
+                bail!("binary {} not found in tar.xz archive", binary_name);
+            }
+        }
         "zip" => {
             let cursor = std::io::Cursor::new(&bytes);
             let mut archive = zip::ZipArchive::new(cursor)?;
 
             let binary_path = if let Some(ref path) = lsp.binary_path {
-                path.replace("{version}", version)
+                path.replace("{version}", &version)
             } else {
                 lsp.binary.clone()
             };
@@ -287,7 +339,7 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
     );
 }
 
-fn find_lsp_binary(lsp: &LspConfig) -> Result<PathBuf> {
+fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let local_path = lsp_binary_path(lsp);
     if local_path.exists() {
         return Ok(local_path);
@@ -298,7 +350,7 @@ fn find_lsp_binary(lsp: &LspConfig) -> Result<PathBuf> {
     }
 
     if lsp.url_template.is_some() {
-        return download_and_extract(lsp);
+        return download_and_extract(lsp, root);
     }
 
     if lsp.npm_package.is_some() {
@@ -342,7 +394,7 @@ struct LspMessage {
 
 impl LspClient {
     fn new(lsp: &LspConfig, root: &Path) -> Result<Self> {
-        let binary_path = find_lsp_binary(lsp)?;
+        let binary_path = find_lsp_binary(lsp, root)?;
 
         let mut process = Command::new(&binary_path)
             .args(&lsp.args)
@@ -654,6 +706,9 @@ impl LspResolver {
             "c" | "h" => "c",
             "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
             "java" => "java",
+            "zig" => "zig",
+            "sh" | "bash" => "shellscript",
+            "scala" | "sc" => "scala",
             _ => "text",
         }
     }
@@ -780,7 +835,7 @@ pub fn check_lsp_availability() -> HashMap<String, LspAvailability> {
     result
 }
 
-pub fn ensure_lsp_for_extension(ext: &str) -> Result<PathBuf> {
+pub fn ensure_lsp_for_extension(ext: &str, root: &Path) -> Result<PathBuf> {
     let registry = Registry::global();
     let lang_entry = registry
         .get_by_extension(ext)
@@ -791,7 +846,7 @@ pub fn ensure_lsp_for_extension(ext: &str) -> Result<PathBuf> {
         .as_ref()
         .with_context(|| format!("no LSP config for language: {}", lang_entry.name))?;
 
-    find_lsp_binary(lsp_config)
+    find_lsp_binary(lsp_config, root)
 }
 
 #[cfg(test)]

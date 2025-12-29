@@ -85,6 +85,18 @@ import_query = """
   (#eq? @_builtin "@import")) @import
 """
 
+[language.lsp]
+binary = "zls"
+args = []
+url_template = "https://github.com/zigtools/zls/releases/download/{version}/zls-{target}.tar.xz"
+archive = "tar.xz"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "x86_64-linux"
+"aarch64-unknown-linux-gnu" = "aarch64-linux"
+"x86_64-apple-darwin" = "x86_64-macos"
+"aarch64-apple-darwin" = "aarch64-macos"
+
 [[language]]
 name = "c"
 extensions = ["c", "h"]
@@ -265,6 +277,11 @@ import_query = """
   ]
   (#any-of? @_cmd "source" ".")) @import
 """
+
+[language.lsp]
+binary = "bash-language-server"
+args = ["start"]
+npm_package = "bash-language-server"
 
 [[language]]
 name = "python"
@@ -559,6 +576,10 @@ import_query = """
   (asterisk)? @wildcard) @import
 """
 
+[language.lsp]
+binary = "jdtls"
+args = []
+
 [[language]]
 name = "scala"
 extensions = ["scala", "sc"]
@@ -619,3 +640,7 @@ import_query = """
     (as_renamed_identifier) @alias
   ]?) @import
 """
+
+[language.lsp]
+binary = "metals"
+args = []
