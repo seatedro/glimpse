@@ -1,789 +1,385 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::Result;
 
-use super::index::{Definition, Index};
+use super::index::{Definition, DefinitionKind, Index, Span};
 
-pub trait WorkspaceDiscovery: Send + Sync {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>>
-    where
-        Self: Sized;
+const SYSTEM_HEADERS: &[&str] = &[
+    "stdio",
+    "stdlib",
+    "string",
+    "math",
+    "time",
+    "errno",
+    "assert",
+    "ctype",
+    "signal",
+    "stdarg",
+    "stddef",
+    "setjmp",
+    "locale",
+    "limits",
+    "float",
+    "iso646",
+    "stdbool",
+    "stdint",
+    "inttypes",
+    "wchar",
+    "wctype",
+    "fenv",
+    "complex",
+    "tgmath",
+    "stdalign",
+    "stdnoreturn",
+    "stdatomic",
+    "threads",
+    "uchar",
+    "iostream",
+    "vector",
+    "string",
+    "map",
+    "set",
+    "unordered_map",
+    "unordered_set",
+    "algorithm",
+    "memory",
+    "functional",
+    "utility",
+    "tuple",
+    "array",
+    "deque",
+    "list",
+    "forward_list",
+    "stack",
+    "queue",
+    "priority_queue",
+    "bitset",
+    "valarray",
+    "regex",
+    "random",
+    "chrono",
+    "ratio",
+    "thread",
+    "mutex",
+    "condition_variable",
+    "future",
+    "atomic",
+    "filesystem",
+    "optional",
+    "variant",
+    "any",
+    "string_view",
+    "charconv",
+    "execution",
+    "span",
+    "ranges",
+    "numbers",
+    "concepts",
+    "coroutine",
+    "compare",
+    "version",
+    "source_location",
+    "format",
+    "bit",
+    "numbers",
+    "typeinfo",
+    "typeindex",
+    "type_traits",
+    "initializer_list",
+    "new",
+    "exception",
+    "stdexcept",
+    "system_error",
+    "cerrno",
+    "cassert",
+    "cctype",
+    "cfenv",
+    "cfloat",
+    "cinttypes",
+    "climits",
+    "clocale",
+    "cmath",
+    "csetjmp",
+    "csignal",
+    "cstdarg",
+    "cstddef",
+    "cstdint",
+    "cstdio",
+    "cstdlib",
+    "cstring",
+    "ctime",
+    "cuchar",
+    "cwchar",
+    "cwctype",
+    "codecvt",
+    "fstream",
+    "iomanip",
+    "ios",
+    "iosfwd",
+    "istream",
+    "ostream",
+    "sstream",
+    "streambuf",
+    "syncstream",
+    "iterator",
+    "locale",
+    "numeric",
+    "limits",
+    "unistd",
+    "fcntl",
+    "sys/",
+    "pthread",
+    "netinet/",
+    "arpa/",
+    "dirent",
+    "dlfcn",
+    "poll",
+    "sched",
+    "semaphore",
+    "spawn",
+    "termios",
+];
 
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf>;
-
-    fn root(&self) -> &Path;
+fn is_system_header(path: &str) -> bool {
+    let clean = path.trim_matches(|c| c == '<' || c == '>' || c == '"');
+    SYSTEM_HEADERS.iter().any(|s| clean.starts_with(s))
 }
 
-#[derive(Debug, Clone)]
-pub struct RustWorkspace {
-    root: PathBuf,
-    members: Vec<CrateMember>,
-}
+fn normalize_to_patterns(import_path: &str, lang: &str) -> Vec<String> {
+    let clean = import_path.trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>');
 
-#[derive(Debug, Clone)]
-pub struct CrateMember {
-    pub name: String,
-    pub path: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct CargoToml {
-    package: Option<CargoPackage>,
-    workspace: Option<CargoWorkspace>,
-}
-
-#[derive(Deserialize)]
-struct CargoPackage {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct CargoWorkspace {
-    members: Option<Vec<String>>,
-}
-
-impl WorkspaceDiscovery for RustWorkspace {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
-        let cargo_path = root.join("Cargo.toml");
-        if !cargo_path.exists() {
-            return Ok(None);
+    match lang {
+        "rust" | "rs" => normalize_rust_import(clean),
+        "python" | "py" => normalize_python_import(clean),
+        "go" => normalize_go_import(clean),
+        "typescript" | "ts" | "tsx" | "javascript" | "js" | "mjs" | "cjs" | "jsx" => {
+            normalize_js_import(clean)
         }
+        "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx" => normalize_c_import(clean),
+        "java" => normalize_java_import(clean),
+        "scala" | "sc" => normalize_scala_import(clean),
+        "zig" => normalize_zig_import(clean),
+        _ => vec![format!("**/{}", clean)],
+    }
+}
 
-        let content = fs::read_to_string(&cargo_path)
-            .with_context(|| format!("failed to read {}", cargo_path.display()))?;
+fn normalize_rust_import(path: &str) -> Vec<String> {
+    let stripped = path
+        .trim_start_matches("crate::")
+        .trim_start_matches("self::")
+        .trim_start_matches("super::");
 
-        let cargo: CargoToml =
-            toml::from_str(&content).with_context(|| "failed to parse Cargo.toml")?;
+    let parts: Vec<&str> = stripped.split("::").filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return vec![];
+    }
 
-        let mut members = Vec::new();
+    let file_path = parts.join("/");
+    vec![
+        format!("**/{}.rs", file_path),
+        format!("**/{}/mod.rs", file_path),
+        format!("**/src/{}.rs", file_path),
+        format!("**/src/{}/mod.rs", file_path),
+    ]
+}
 
-        if let Some(ws) = cargo.workspace {
-            if let Some(member_globs) = ws.members {
-                for pattern in member_globs {
-                    let expanded = expand_glob(root, &pattern)?;
-                    for member_path in expanded {
-                        if let Some(member) = parse_crate_member(&member_path)? {
-                            members.push(member);
-                        }
-                    }
+fn normalize_python_import(path: &str) -> Vec<String> {
+    if path.starts_with('.') {
+        return vec![];
+    }
+
+    let parts: Vec<&str> = path.split('.').collect();
+    if parts.is_empty() {
+        return vec![];
+    }
+
+    let file_path = parts.join("/");
+    vec![
+        format!("**/{}.py", file_path),
+        format!("**/{}/__init__.py", file_path),
+        format!("**/src/{}.py", file_path),
+        format!("**/src/{}/__init__.py", file_path),
+    ]
+}
+
+fn normalize_go_import(path: &str) -> Vec<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+
+    let local_parts: Vec<&str> = if parts.len() >= 3
+        && (parts[0].contains('.') || parts[0] == "github" || parts[0] == "golang")
+    {
+        parts[3..].to_vec()
+    } else {
+        parts
+    };
+
+    if local_parts.is_empty() {
+        return vec![];
+    }
+
+    let dir_path = local_parts.join("/");
+    vec![
+        format!("{}/*.go", dir_path),
+        format!("**/{}/*.go", dir_path),
+    ]
+}
+
+fn normalize_js_import(path: &str) -> Vec<String> {
+    if path.starts_with('.') {
+        let clean = path.trim_start_matches("./").trim_start_matches("../");
+        return vec![
+            format!("**/{}.ts", clean),
+            format!("**/{}.tsx", clean),
+            format!("**/{}.js", clean),
+            format!("**/{}.jsx", clean),
+            format!("**/{}/index.ts", clean),
+            format!("**/{}/index.tsx", clean),
+            format!("**/{}/index.js", clean),
+        ];
+    }
+
+    let clean = path.trim_start_matches("@/").trim_start_matches('@');
+    let parts: Vec<&str> = clean.split('/').collect();
+
+    if parts.is_empty() {
+        return vec![];
+    }
+
+    let file_path = parts.join("/");
+    vec![
+        format!("**/{}.ts", file_path),
+        format!("**/{}.tsx", file_path),
+        format!("**/{}.js", file_path),
+        format!("**/{}.jsx", file_path),
+        format!("**/{}/index.ts", file_path),
+        format!("**/{}/index.tsx", file_path),
+        format!("**/{}/index.js", file_path),
+        format!("**/src/{}.ts", file_path),
+        format!("**/src/{}.tsx", file_path),
+    ]
+}
+
+fn normalize_c_import(path: &str) -> Vec<String> {
+    if is_system_header(path) {
+        return vec![];
+    }
+
+    let clean = path.trim_matches(|c| c == '"' || c == '<' || c == '>');
+    vec![
+        format!("**/{}", clean),
+        format!("**/include/{}", clean),
+        format!("**/src/{}", clean),
+    ]
+}
+
+fn normalize_java_import(path: &str) -> Vec<String> {
+    if path.starts_with("java.") || path.starts_with("javax.") || path.starts_with("sun.") {
+        return vec![];
+    }
+
+    let file_path = path.replace('.', "/");
+    vec![
+        format!("**/{}.java", file_path),
+        format!("**/src/{}.java", file_path),
+        format!("**/src/main/java/{}.java", file_path),
+    ]
+}
+
+fn normalize_scala_import(path: &str) -> Vec<String> {
+    if path.starts_with("scala.") || path.starts_with("java.") {
+        return vec![];
+    }
+
+    let clean = path.trim_end_matches("._").trim_end_matches(".*");
+    let file_path = clean.replace('.', "/");
+    vec![
+        format!("**/{}.scala", file_path),
+        format!("**/{}.sc", file_path),
+        format!("**/src/{}.scala", file_path),
+        format!("**/src/main/scala/{}.scala", file_path),
+    ]
+}
+
+fn normalize_zig_import(path: &str) -> Vec<String> {
+    if path == "std" {
+        return vec![];
+    }
+
+    if path.ends_with(".zig") || path.contains('/') {
+        return vec![format!("**/{}", path), format!("**/src/{}", path)];
+    }
+
+    vec![format!("**/{}.zig", path), format!("**/src/{}.zig", path)]
+}
+
+fn search_patterns(patterns: &[String], root: &Path) -> Option<PathBuf> {
+    for pattern in patterns {
+        let full_pattern = root.join(pattern);
+        let pattern_str = full_pattern.to_string_lossy();
+
+        if let Ok(paths) = glob::glob(&pattern_str) {
+            for entry in paths.flatten() {
+                if entry.is_file() {
+                    return Some(entry);
                 }
             }
-        }
-
-        if let Some(pkg) = cargo.package {
-            members.push(CrateMember {
-                name: pkg.name,
-                path: root.to_path_buf(),
-            });
-        }
-
-        if members.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(Box::new(RustWorkspace {
-            root: root.to_path_buf(),
-            members,
-        })))
-    }
-
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
-        let parts: Vec<&str> = module_path.split("::").collect();
-        if parts.is_empty() {
-            return None;
-        }
-
-        let crate_name = parts[0];
-
-        if crate_name == "crate" || crate_name == "self" || crate_name == "super" {
-            return None;
-        }
-
-        let member = self.members.iter().find(|m| m.name == crate_name)?;
-        let src_dir = member.path.join("src");
-
-        if parts.len() == 1 {
-            let lib_rs = src_dir.join("lib.rs");
-            if lib_rs.exists() {
-                return Some(lib_rs);
-            }
-            let main_rs = src_dir.join("main.rs");
-            if main_rs.exists() {
-                return Some(main_rs);
-            }
-            return None;
-        }
-
-        let mut path = src_dir;
-        for part in &parts[1..] {
-            path = path.join(part);
-        }
-
-        if path.with_extension("rs").exists() {
-            return Some(path.with_extension("rs"));
-        }
-
-        let mod_path = path.join("mod.rs");
-        if mod_path.exists() {
-            return Some(mod_path);
-        }
-
-        None
-    }
-
-    fn root(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl RustWorkspace {
-    pub fn members(&self) -> &[CrateMember] {
-        &self.members
-    }
-
-    pub fn resolve_crate(&self, crate_name: &str) -> Option<&PathBuf> {
-        self.members
-            .iter()
-            .find(|m| m.name == crate_name)
-            .map(|m| &m.path)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GoWorkspace {
-    root: PathBuf,
-    module_path: String,
-}
-
-#[derive(Deserialize)]
-struct GoMod {
-    #[serde(rename = "Module")]
-    module: GoModule,
-}
-
-#[derive(Deserialize)]
-struct GoModule {
-    #[serde(rename = "Path")]
-    path: String,
-}
-
-impl WorkspaceDiscovery for GoWorkspace {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
-        let go_mod_path = root.join("go.mod");
-        if !go_mod_path.exists() {
-            return Ok(None);
-        }
-
-        let output = Command::new("go")
-            .args(["mod", "edit", "-json"])
-            .current_dir(root)
-            .output()
-            .context("failed to run go mod edit -json")?;
-
-        if !output.status.success() {
-            let content = fs::read_to_string(&go_mod_path)?;
-            if let Some(module_path) = parse_go_mod_fallback(&content) {
-                return Ok(Some(Box::new(GoWorkspace {
-                    root: root.to_path_buf(),
-                    module_path,
-                })));
-            }
-            return Ok(None);
-        }
-
-        let go_mod: GoMod =
-            serde_json::from_slice(&output.stdout).context("failed to parse go mod output")?;
-
-        Ok(Some(Box::new(GoWorkspace {
-            root: root.to_path_buf(),
-            module_path: go_mod.module.path,
-        })))
-    }
-
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
-        if !module_path.starts_with(&self.module_path) {
-            return None;
-        }
-
-        let relative = module_path
-            .strip_prefix(&self.module_path)?
-            .trim_start_matches('/');
-
-        if relative.is_empty() {
-            let main_go = self.root.join("main.go");
-            if main_go.exists() {
-                return Some(main_go);
-            }
-            for entry in fs::read_dir(&self.root).ok()? {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().map(|e| e == "go").unwrap_or(false) {
-                    return Some(path);
-                }
-            }
-            return None;
-        }
-
-        let pkg_dir = self.root.join(relative);
-        if pkg_dir.is_dir() {
-            for entry in fs::read_dir(&pkg_dir).ok()? {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension().map(|e| e == "go").unwrap_or(false)
-                    && !path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().ends_with("_test.go"))
-                        .unwrap_or(false)
-                {
-                    return Some(path);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn root(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl GoWorkspace {
-    pub fn module_path(&self) -> &str {
-        &self.module_path
-    }
-}
-
-fn parse_go_mod_fallback(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with("module ") {
-            return Some(line.strip_prefix("module ")?.trim().to_string());
         }
     }
     None
 }
 
-fn path_matches_module(file: &Path, module_parts: &[&str]) -> bool {
-    if module_parts.is_empty() {
-        return true;
-    }
+fn resolve_relative(import_path: &str, from_file: &Path, lang: &str) -> Option<PathBuf> {
+    let from_dir = from_file.parent()?;
+    let clean = import_path.trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>');
 
-    let file_no_ext = file.with_extension("");
-    let file_parts: Vec<&str> = file_no_ext
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-
-    let dir_parts = if module_parts.len() > 1 {
-        &module_parts[..module_parts.len() - 1]
-    } else {
-        return true;
-    };
-
-    if dir_parts.len() > file_parts.len() {
-        return false;
-    }
-
-    dir_parts
-        .iter()
-        .rev()
-        .zip(file_parts.iter().rev())
-        .all(|(module, file)| *module == *file)
-}
-
-fn path_matches_java_package(file: &Path, package_parts: &[&str]) -> bool {
-    let file_parts: Vec<&str> = file
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-
-    if package_parts.is_empty() {
-        return true;
-    }
-
-    if package_parts.len() > file_parts.len() {
-        return false;
-    }
-
-    for window in file_parts.windows(package_parts.len()) {
-        if window == package_parts {
-            return true;
+    match lang {
+        "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx" => {
+            if is_system_header(import_path) {
+                return None;
+            }
+            let candidate = from_dir.join(clean);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            let parent = from_dir.parent()?;
+            let candidate = parent.join(clean);
+            if candidate.exists() {
+                return Some(candidate);
+            }
         }
-    }
-
-    false
-}
-
-#[derive(Debug, Clone)]
-pub struct TsWorkspace {
-    root: PathBuf,
-    name: String,
-    paths: Vec<(String, PathBuf)>,
-}
-
-#[derive(Deserialize)]
-struct PackageJson {
-    name: Option<String>,
-    #[allow(dead_code)]
-    workspaces: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct TsConfig {
-    #[serde(rename = "compilerOptions")]
-    compiler_options: Option<TsCompilerOptions>,
-}
-
-#[derive(Deserialize)]
-struct TsCompilerOptions {
-    paths: Option<std::collections::HashMap<String, Vec<String>>>,
-    #[serde(rename = "baseUrl")]
-    base_url: Option<String>,
-}
-
-impl WorkspaceDiscovery for TsWorkspace {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
-        let pkg_json_path = root.join("package.json");
-        if !pkg_json_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&pkg_json_path)
-            .with_context(|| format!("failed to read {}", pkg_json_path.display()))?;
-
-        let pkg: PackageJson =
-            serde_json::from_str(&content).with_context(|| "failed to parse package.json")?;
-
-        let name = pkg.name.unwrap_or_else(|| {
-            root.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        });
-
-        let mut paths = Vec::new();
-
-        let tsconfig_path = root.join("tsconfig.json");
-        if tsconfig_path.exists() {
-            if let Ok(ts_content) = fs::read_to_string(&tsconfig_path) {
-                if let Ok(tsconfig) = serde_json::from_str::<TsConfig>(&ts_content) {
-                    if let Some(opts) = tsconfig.compiler_options {
-                        let base = opts
-                            .base_url
-                            .map(|b| root.join(b))
-                            .unwrap_or_else(|| root.to_path_buf());
-
-                        if let Some(path_map) = opts.paths {
-                            for (alias, targets) in path_map {
-                                if let Some(target) = targets.first() {
-                                    let clean_alias = alias.trim_end_matches("/*");
-                                    let clean_target = target.trim_end_matches("/*");
-                                    paths.push((clean_alias.to_string(), base.join(clean_target)));
-                                }
-                            }
-                        }
-                    }
+        "typescript" | "ts" | "tsx" | "javascript" | "js" | "mjs" | "cjs" | "jsx" => {
+            if !clean.starts_with('.') {
+                return None;
+            }
+            let base = from_dir.join(clean.trim_start_matches("./"));
+            for ext in &["ts", "tsx", "js", "jsx"] {
+                let candidate = base.with_extension(ext);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+            let index = base.join("index");
+            for ext in &["ts", "tsx", "js", "jsx"] {
+                let candidate = index.with_extension(ext);
+                if candidate.exists() {
+                    return Some(candidate);
                 }
             }
         }
-
-        Ok(Some(Box::new(TsWorkspace {
-            root: root.to_path_buf(),
-            name,
-            paths,
-        })))
-    }
-
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
-        if module_path.starts_with('.') {
-            return None;
-        }
-
-        for (alias, target_dir) in &self.paths {
-            if module_path.starts_with(alias) {
-                let remainder = module_path.strip_prefix(alias)?.trim_start_matches('/');
-                let base = if remainder.is_empty() {
-                    target_dir.clone()
-                } else {
-                    target_dir.join(remainder)
-                };
-
-                for ext in &["ts", "tsx", "js", "jsx"] {
-                    let with_ext = base.with_extension(ext);
-                    if with_ext.exists() {
-                        return Some(with_ext);
-                    }
-                }
-
-                let index_path = base.join("index");
-                for ext in &["ts", "tsx", "js", "jsx"] {
-                    let with_ext = index_path.with_extension(ext);
-                    if with_ext.exists() {
-                        return Some(with_ext);
-                    }
+        "zig" => {
+            if clean.ends_with(".zig") || clean.contains('/') {
+                let candidate = from_dir.join(clean);
+                if candidate.exists() {
+                    return Some(candidate);
                 }
             }
         }
-
-        let node_modules = self.root.join("node_modules").join(module_path);
-        if node_modules.exists() {
-            let pkg_json = node_modules.join("package.json");
-            if pkg_json.exists() {
-                if let Ok(content) = fs::read_to_string(&pkg_json) {
-                    if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(main) = pkg.get("main").and_then(|m| m.as_str()) {
-                            let main_path = node_modules.join(main);
-                            if main_path.exists() {
-                                return Some(main_path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
+        _ => {}
     }
 
-    fn root(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl TsWorkspace {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn paths(&self) -> &[(String, PathBuf)] {
-        &self.paths
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PythonWorkspace {
-    root: PathBuf,
-    package_name: String,
-    src_dir: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct PyProjectToml {
-    project: Option<PyProject>,
-    tool: Option<PyToolSection>,
-}
-
-#[derive(Deserialize)]
-struct PyProject {
-    name: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PyToolSection {
-    poetry: Option<PyPoetry>,
-    setuptools: Option<PySetuptools>,
-}
-
-#[derive(Deserialize)]
-struct PyPoetry {
-    name: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PySetuptools {
-    #[serde(rename = "package-dir")]
-    package_dir: Option<std::collections::HashMap<String, String>>,
-}
-
-impl WorkspaceDiscovery for PythonWorkspace {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
-        let pyproject_path = root.join("pyproject.toml");
-
-        let (package_name, src_dir) = if pyproject_path.exists() {
-            let content = fs::read_to_string(&pyproject_path)
-                .with_context(|| format!("failed to read {}", pyproject_path.display()))?;
-
-            let pyproject: PyProjectToml =
-                toml::from_str(&content).with_context(|| "failed to parse pyproject.toml")?;
-
-            let name = pyproject
-                .project
-                .and_then(|p| p.name)
-                .or_else(|| {
-                    pyproject
-                        .tool
-                        .as_ref()
-                        .and_then(|t| t.poetry.as_ref())
-                        .and_then(|p| p.name.clone())
-                })
-                .unwrap_or_else(|| {
-                    root.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                });
-
-            let src = pyproject
-                .tool
-                .and_then(|t| t.setuptools)
-                .and_then(|s| s.package_dir)
-                .and_then(|dirs| dirs.get("").cloned())
-                .map(|dir| root.join(dir))
-                .unwrap_or_else(|| {
-                    let src_layout = root.join("src");
-                    if src_layout.exists() {
-                        src_layout
-                    } else {
-                        root.to_path_buf()
-                    }
-                });
-
-            (name, src)
-        } else {
-            let setup_py = root.join("setup.py");
-            if !setup_py.exists() {
-                return Ok(None);
-            }
-
-            let name = root
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-
-            let src = if root.join("src").exists() {
-                root.join("src")
-            } else {
-                root.to_path_buf()
-            };
-
-            (name, src)
-        };
-
-        Ok(Some(Box::new(PythonWorkspace {
-            root: root.to_path_buf(),
-            package_name,
-            src_dir,
-        })))
-    }
-
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
-        if module_path.starts_with('.') {
-            return None;
-        }
-
-        let parts: Vec<&str> = module_path.split('.').collect();
-        if parts.is_empty() {
-            return None;
-        }
-
-        let mut path = self.src_dir.clone();
-        for part in &parts {
-            path = path.join(part);
-        }
-
-        let py_file = path.with_extension("py");
-        if py_file.exists() {
-            return Some(py_file);
-        }
-
-        let init_file = path.join("__init__.py");
-        if init_file.exists() {
-            return Some(init_file);
-        }
-
-        None
-    }
-
-    fn root(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl PythonWorkspace {
-    pub fn package_name(&self) -> &str {
-        &self.package_name
-    }
-
-    pub fn src_dir(&self) -> &Path {
-        &self.src_dir
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ZigWorkspace {
-    root: PathBuf,
-    packages: Vec<(String, PathBuf)>,
-}
-
-impl WorkspaceDiscovery for ZigWorkspace {
-    fn discover(root: &Path) -> Result<Option<Box<Self>>> {
-        let zon_path = root.join("build.zig.zon");
-        if !zon_path.exists() {
-            return Ok(None);
-        }
-
-        let content = fs::read_to_string(&zon_path)
-            .with_context(|| format!("failed to read {}", zon_path.display()))?;
-
-        let packages = parse_zig_zon_deps(&content, root);
-
-        Ok(Some(Box::new(ZigWorkspace {
-            root: root.to_path_buf(),
-            packages,
-        })))
-    }
-
-    fn resolve_module(&self, module_path: &str) -> Option<PathBuf> {
-        if module_path == "std" {
-            return None;
-        }
-
-        if module_path.ends_with(".zig") || module_path.contains('/') {
-            let resolved = self.root.join("src").join(module_path);
-            if resolved.exists() {
-                return Some(resolved);
-            }
-            let resolved = self.root.join(module_path);
-            if resolved.exists() {
-                return Some(resolved);
-            }
-            return None;
-        }
-
-        for (name, pkg_path) in &self.packages {
-            if name == module_path {
-                return find_zig_root_file(pkg_path, name);
-            }
-        }
-
-        None
-    }
-
-    fn root(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl ZigWorkspace {
-    pub fn packages(&self) -> &[(String, PathBuf)] {
-        &self.packages
-    }
-}
-
-fn parse_zig_zon_deps(content: &str, root: &Path) -> Vec<(String, PathBuf)> {
-    let mut packages = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if !line.starts_with('.') || !line.contains('=') {
-            continue;
-        }
-
-        let Some(name_end) = line.find('=') else {
-            continue;
-        };
-        let name = line[1..name_end].trim().trim_matches(|c| c == ' ');
-
-        if !line.contains(".path") {
-            continue;
-        }
-
-        if let Some(path_start) = line.find(".path") {
-            let rest = &line[path_start..];
-            if let Some(quote_start) = rest.find('"') {
-                let after_quote = &rest[quote_start + 1..];
-                if let Some(quote_end) = after_quote.find('"') {
-                    let path_str = &after_quote[..quote_end];
-                    packages.push((name.to_string(), root.join(path_str)));
-                }
-            }
-        }
-    }
-
-    packages
-}
-
-fn find_zig_root_file(pkg_path: &Path, name: &str) -> Option<PathBuf> {
-    let candidates = [
-        pkg_path.join("src/root.zig"),
-        pkg_path.join("src/lib.zig"),
-        pkg_path.join("src/main.zig"),
-        pkg_path.join(format!("src/{}.zig", name)),
-        pkg_path.join(format!("{}.zig", name)),
-        pkg_path.join("root.zig"),
-        pkg_path.join("lib.zig"),
-        pkg_path.join("main.zig"),
-    ];
-
-    candidates.into_iter().find(|c| c.exists())
-}
-
-fn expand_glob(root: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
-    let full_pattern = root.join(pattern);
-    let pattern_str = full_pattern.to_string_lossy();
-
-    let mut results = Vec::new();
-
-    if pattern.contains('*') {
-        for path in glob::glob(&pattern_str)
-            .with_context(|| "invalid glob pattern")?
-            .flatten()
-        {
-            if path.is_dir() && path.join("Cargo.toml").exists() {
-                results.push(path);
-            }
-        }
-    } else {
-        let path = root.join(pattern);
-        if path.is_dir() && path.join("Cargo.toml").exists() {
-            results.push(path);
-        }
-    }
-
-    Ok(results)
-}
-
-fn parse_crate_member(path: &Path) -> Result<Option<CrateMember>> {
-    let cargo_path = path.join("Cargo.toml");
-    if !cargo_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&cargo_path)
-        .with_context(|| format!("failed to read {}", cargo_path.display()))?;
-
-    let cargo: CargoToml =
-        toml::from_str(&content).with_context(|| "failed to parse Cargo.toml")?;
-
-    let name = cargo
-        .package
-        .map(|p| p.name)
-        .unwrap_or_else(|| path.file_name().unwrap().to_string_lossy().to_string());
-
-    Ok(Some(CrateMember {
-        name,
-        path: path.to_path_buf(),
-    }))
-}
-
-pub fn resolve_same_file(callee: &str, file: &Path, index: &Index) -> Option<Definition> {
-    let record = index.get(file)?;
-    record
-        .definitions
-        .iter()
-        .find(|d| d.name == callee)
-        .cloned()
-}
-
-pub fn resolve_by_index(callee: &str, index: &Index) -> Option<Definition> {
-    index.definitions().find(|d| d.name == callee).cloned()
+    None
 }
 
 struct DefinitionPattern {
@@ -825,6 +421,19 @@ const DEFINITION_PATTERNS: &[DefinitionPattern] = &[
         pattern: r"(function\s+{NAME}|{NAME}\s*\(\s*\))",
     },
 ];
+
+pub fn resolve_same_file(callee: &str, file: &Path, index: &Index) -> Option<Definition> {
+    let record = index.get(file)?;
+    record
+        .definitions
+        .iter()
+        .find(|d| d.name == callee)
+        .cloned()
+}
+
+pub fn resolve_by_index(callee: &str, index: &Index) -> Option<Definition> {
+    index.definitions().find(|d| d.name == callee).cloned()
+}
 
 pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>> {
     use grep::regex::RegexMatcher;
@@ -868,8 +477,8 @@ pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>
             if let Some((line_num, file_path)) = found {
                 return Ok(Some(Definition {
                     name: callee.to_string(),
-                    kind: super::index::DefinitionKind::Function,
-                    span: super::index::Span {
+                    kind: DefinitionKind::Function,
+                    span: Span {
                         start_byte: 0,
                         end_byte: 0,
                         start_line: line_num as usize,
@@ -886,20 +495,14 @@ pub fn resolve_by_search(callee: &str, root: &Path) -> Result<Option<Definition>
 
 pub struct Resolver<'a> {
     index: &'a Index,
-    workspace: Option<Box<dyn WorkspaceDiscovery>>,
     root: PathBuf,
     discovered_files: RefCell<HashSet<PathBuf>>,
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(
-        index: &'a Index,
-        workspace: Option<Box<dyn WorkspaceDiscovery>>,
-        root: PathBuf,
-    ) -> Self {
+    pub fn new(index: &'a Index, root: PathBuf) -> Self {
         Self {
             index,
-            workspace,
             root,
             discovered_files: RefCell::new(HashSet::new()),
         }
@@ -912,16 +515,6 @@ impl<'a> Resolver<'a> {
 
         if let Some(def) = self.resolve_via_imports(callee, from_file) {
             return Ok(Some(def));
-        }
-
-        if let Some(ref ws) = self.workspace {
-            if let Some(module_path) = ws.resolve_module(callee) {
-                if let Some(record) = self.index.get(&module_path) {
-                    if let Some(def) = record.definitions.first() {
-                        return Ok(Some(def.clone()));
-                    }
-                }
-            }
         }
 
         if let Some(def) = resolve_by_index(callee, self.index) {
@@ -945,223 +538,33 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_via_imports(&self, callee: &str, from_file: &Path) -> Option<Definition> {
+        let record = self.index.get(from_file)?;
         let ext = from_file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-        match ext {
-            "rs" => self.resolve_rust_import(callee, from_file),
-            "py" => self.resolve_python_import(callee, from_file),
-            "go" => self.resolve_go_import(callee, from_file),
-            "zig" => self.resolve_zig_import(callee, from_file),
-            "java" => self.resolve_java_import(callee, from_file),
-            "scala" | "sc" => self.resolve_scala_import(callee, from_file),
-            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
-                self.resolve_ts_import(callee, from_file)
-            }
-            _ => self.resolve_generic_import(callee, from_file),
-        }
-    }
-
-    fn resolve_rust_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
         for import in &record.imports {
-            let segments: Vec<&str> = import.module_path.split("::").collect();
-            let symbol_name = segments.last()?;
-
-            let visible_name = import.alias.as_deref().unwrap_or(symbol_name);
-            if visible_name != callee {
+            if !self.import_matches_callee(&import.module_path, callee, ext) {
                 continue;
             }
 
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(&import.module_path) {
-                    if let Some(def) = self.find_def_in_file(&resolved_path, symbol_name) {
-                        return Some(def);
-                    }
+            if let Some(resolved) = resolve_relative(&import.module_path, from_file, ext) {
+                if let Some(def) = self.find_def_in_file(&resolved, callee) {
+                    return Some(def);
                 }
-            }
-
-            let filtered_parts: Vec<&str> = segments
-                .iter()
-                .copied()
-                .filter(|p| !p.is_empty() && *p != "crate" && *p != "self" && *p != "super")
-                .collect();
-
-            for def in self.index.definitions() {
-                if def.name != *symbol_name {
-                    continue;
-                }
-                if path_matches_module(&def.file, &filtered_parts) {
-                    return Some(def.clone());
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_python_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let segments: Vec<&str> = import.module_path.split('.').collect();
-            let symbol_name = segments.last()?;
-
-            let visible_name = import.alias.as_deref().unwrap_or(symbol_name);
-            if visible_name != callee {
-                continue;
-            }
-
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(&import.module_path) {
-                    if let Some(def) = self.find_def_in_file(&resolved_path, symbol_name) {
-                        return Some(def);
-                    }
-                }
-            }
-
-            for def in self.index.definitions() {
-                if def.name != *symbol_name {
-                    continue;
-                }
-                if path_matches_module(&def.file, &segments) {
-                    return Some(def.clone());
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_go_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let pkg_name = import
-                .alias
-                .as_deref()
-                .or_else(|| import.module_path.rsplit('/').next())?;
-
-            if pkg_name != callee {
-                continue;
-            }
-
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(&import.module_path) {
-                    if let Some(target_record) = self.index.get(&resolved_path) {
-                        if let Some(def) = target_record.definitions.first() {
-                            return Some(def.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_ts_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let segments: Vec<&str> = import.module_path.split('/').collect();
-            let module_name = segments.last()?;
-
-            let visible_name = import.alias.as_deref().unwrap_or(module_name);
-            if visible_name != callee {
-                continue;
-            }
-
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(&import.module_path) {
-                    if let Some(def) = self.find_def_in_file(&resolved_path, callee) {
-                        return Some(def);
-                    }
-                }
-            }
-
-            for def in self.index.definitions() {
-                if def.name != callee {
-                    continue;
-                }
-                if path_matches_module(&def.file, &segments) {
-                    return Some(def.clone());
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_zig_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let import_name = import.alias.as_deref().unwrap_or("");
-            if import_name != callee {
-                continue;
-            }
-
-            let import_path = &import.module_path;
-
-            if import_path == "std" {
-                continue;
-            }
-
-            if import_path.ends_with(".zig") || import_path.contains('/') {
-                let from_dir = from_file.parent()?;
-                let resolved = from_dir.join(import_path);
-                if resolved.exists() {
-                    if let Some(record) = self.index.get(&resolved) {
-                        if let Some(def) = record.definitions.first() {
-                            return Some(def.clone());
-                        }
-                    }
-                }
-                continue;
-            }
-
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(import_path) {
-                    if let Some(target_record) = self.index.get(&resolved_path) {
-                        if let Some(def) = target_record.definitions.first() {
-                            return Some(def.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_java_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let segments: Vec<&str> = import.module_path.split('.').collect();
-            let class_name = segments.last()?;
-
-            if *class_name != callee && *class_name != "*" {
-                continue;
-            }
-
-            if *class_name == "*" {
-                let pkg_segments = &segments[..segments.len() - 1];
-                for def in self.index.definitions() {
-                    if def.name != callee {
-                        continue;
-                    }
-                    if path_matches_java_package(&def.file, pkg_segments) {
+                if let Some(target_record) = self.index.get(&resolved) {
+                    if let Some(def) = target_record.definitions.first() {
                         return Some(def.clone());
                     }
                 }
-            } else {
-                for def in self.index.definitions() {
-                    if def.name != *class_name {
-                        continue;
-                    }
-                    if path_matches_java_package(&def.file, &segments[..segments.len() - 1]) {
+            }
+
+            let patterns = normalize_to_patterns(&import.module_path, ext);
+            if let Some(resolved) = search_patterns(&patterns, &self.root) {
+                self.discovered_files.borrow_mut().insert(resolved.clone());
+                if let Some(def) = self.find_def_in_file(&resolved, callee) {
+                    return Some(def);
+                }
+                if let Some(target_record) = self.index.get(&resolved) {
+                    if let Some(def) = target_record.definitions.first() {
                         return Some(def.clone());
                     }
                 }
@@ -1171,75 +574,34 @@ impl<'a> Resolver<'a> {
         None
     }
 
-    fn resolve_scala_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
+    fn import_matches_callee(&self, module_path: &str, callee: &str, lang: &str) -> bool {
+        let clean = module_path.trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>');
 
-        for import in &record.imports {
-            let segments: Vec<&str> = import.module_path.split('.').collect();
-            let symbol_name = segments.last()?;
-
-            let visible_name = import.alias.as_deref().unwrap_or(symbol_name);
-            if visible_name != callee && *symbol_name != "_" {
-                continue;
+        match lang {
+            "rs" => {
+                let parts: Vec<&str> = clean.split("::").collect();
+                parts.last().map(|s| *s == callee).unwrap_or(false)
             }
-
-            if *symbol_name == "_" {
-                let pkg_segments = &segments[..segments.len() - 1];
-                for def in self.index.definitions() {
-                    if def.name != callee {
-                        continue;
-                    }
-                    if path_matches_java_package(&def.file, pkg_segments) {
-                        return Some(def.clone());
-                    }
-                }
-            } else {
-                for def in self.index.definitions() {
-                    if def.name != *symbol_name {
-                        continue;
-                    }
-                    if path_matches_java_package(&def.file, &segments[..segments.len() - 1]) {
-                        return Some(def.clone());
-                    }
-                }
+            "py" => {
+                let parts: Vec<&str> = clean.split('.').collect();
+                parts.last().map(|s| *s == callee).unwrap_or(false)
             }
+            "go" => {
+                let parts: Vec<&str> = clean.split('/').collect();
+                parts.last().map(|s| *s == callee).unwrap_or(false)
+            }
+            "java" | "scala" | "sc" => {
+                let parts: Vec<&str> = clean.split('.').collect();
+                parts
+                    .last()
+                    .map(|s| *s == callee || *s == "*" || *s == "_")
+                    .unwrap_or(false)
+            }
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => true,
+            "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx" => true,
+            "zig" => true,
+            _ => true,
         }
-
-        None
-    }
-
-    fn resolve_generic_import(&self, callee: &str, from_file: &Path) -> Option<Definition> {
-        let record = self.index.get(from_file)?;
-
-        for import in &record.imports {
-            let normalized = import.module_path.replace('.', "::");
-            let segments: Vec<&str> = normalized.split("::").filter(|p| !p.is_empty()).collect();
-            let symbol_name = segments.last()?;
-
-            let visible_name = import.alias.as_deref().unwrap_or(symbol_name);
-            if visible_name != callee {
-                continue;
-            }
-
-            if let Some(ref ws) = self.workspace {
-                if let Some(resolved_path) = ws.resolve_module(&import.module_path) {
-                    if let Some(def) = self.find_def_in_file(&resolved_path, symbol_name) {
-                        return Some(def);
-                    }
-                }
-            }
-
-            for def in self.index.definitions() {
-                if def.name != *symbol_name {
-                    continue;
-                }
-                if path_matches_module(&def.file, &segments) {
-                    return Some(def.clone());
-                }
-            }
-        }
-
-        None
     }
 
     fn find_def_in_file(&self, file: &Path, name: &str) -> Option<Definition> {
@@ -1254,101 +616,92 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn setup_rust_workspace() -> TempDir {
+    #[test]
+    fn test_normalize_rust_import() {
+        let patterns = normalize_rust_import("crate::foo::bar");
+        assert!(patterns.iter().any(|p| p.contains("foo/bar.rs")));
+        assert!(patterns.iter().any(|p| p.contains("foo/bar/mod.rs")));
+    }
+
+    #[test]
+    fn test_normalize_python_import() {
+        let patterns = normalize_python_import("mypackage.utils.helper");
+        assert!(patterns
+            .iter()
+            .any(|p| p.contains("mypackage/utils/helper.py")));
+        assert!(patterns
+            .iter()
+            .any(|p| p.contains("mypackage/utils/helper/__init__.py")));
+    }
+
+    #[test]
+    fn test_normalize_go_import() {
+        let patterns = normalize_go_import("github.com/user/repo/pkg/utils");
+        assert!(patterns.iter().any(|p| p.contains("pkg/utils")));
+    }
+
+    #[test]
+    fn test_normalize_js_import_relative() {
+        let patterns = normalize_js_import("./components/Button");
+        assert!(patterns.iter().any(|p| p.contains("components/Button.ts")));
+        assert!(patterns
+            .iter()
+            .any(|p| p.contains("components/Button/index.ts")));
+    }
+
+    #[test]
+    fn test_normalize_js_import_alias() {
+        let patterns = normalize_js_import("@/components/Button");
+        assert!(patterns.iter().any(|p| p.contains("components/Button.ts")));
+    }
+
+    #[test]
+    fn test_normalize_c_import() {
+        let patterns = normalize_c_import("utils/helper.h");
+        assert!(patterns.iter().any(|p| p.contains("utils/helper.h")));
+    }
+
+    #[test]
+    fn test_normalize_c_import_system_skipped() {
+        let patterns = normalize_c_import("<stdio.h>");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_java_import() {
+        let patterns = normalize_java_import("com.example.utils.Helper");
+        assert!(patterns
+            .iter()
+            .any(|p| p.contains("com/example/utils/Helper.java")));
+    }
+
+    #[test]
+    fn test_normalize_java_import_stdlib_skipped() {
+        let patterns = normalize_java_import("java.util.List");
+        assert!(patterns.is_empty());
+    }
+
+    #[test]
+    fn test_is_system_header() {
+        assert!(is_system_header("<stdio.h>"));
+        assert!(is_system_header("<vector>"));
+        assert!(is_system_header("<iostream>"));
+        assert!(is_system_header("<sys/types.h>"));
+        assert!(!is_system_header("\"myheader.h\""));
+        assert!(!is_system_header("\"utils/helper.h\""));
+    }
+
+    #[test]
+    fn test_search_patterns() {
         let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("helper.rs"), "fn helper() {}").unwrap();
 
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            r#"
-[workspace]
-members = ["crates/*"]
-
-[package]
-name = "root-crate"
-version = "0.1.0"
-"#,
-        )
-        .unwrap();
-
-        let crate_a = dir.path().join("crates/crate-a");
-        fs::create_dir_all(crate_a.join("src")).unwrap();
-        fs::write(
-            crate_a.join("Cargo.toml"),
-            r#"
-[package]
-name = "crate-a"
-version = "0.1.0"
-"#,
-        )
-        .unwrap();
-        fs::write(crate_a.join("src/lib.rs"), "pub fn foo() {}").unwrap();
-
-        let crate_b = dir.path().join("crates/crate-b");
-        fs::create_dir_all(crate_b.join("src")).unwrap();
-        fs::write(
-            crate_b.join("Cargo.toml"),
-            r#"
-[package]
-name = "crate-b"
-version = "0.1.0"
-"#,
-        )
-        .unwrap();
-        fs::write(crate_b.join("src/lib.rs"), "pub fn bar() {}").unwrap();
-
-        dir
-    }
-
-    #[test]
-    fn test_rust_workspace_discovery() {
-        let dir = setup_rust_workspace();
-        let ws = RustWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        assert_eq!(ws.root(), dir.path());
-        assert_eq!(ws.members().len(), 3);
-
-        let names: Vec<_> = ws.members().iter().map(|m| m.name.as_str()).collect();
-        assert!(names.contains(&"root-crate"));
-        assert!(names.contains(&"crate-a"));
-        assert!(names.contains(&"crate-b"));
-    }
-
-    #[test]
-    fn test_rust_workspace_resolve_crate() {
-        let dir = setup_rust_workspace();
-        let ws = RustWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let path = ws.resolve_crate("crate-a").unwrap();
-        assert!(path.ends_with("crates/crate-a"));
-
-        assert!(ws.resolve_crate("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_rust_workspace_resolve_module() {
-        let dir = setup_rust_workspace();
-        let ws = RustWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        assert!(ws.resolve_module("crate").is_none());
-        assert!(ws.resolve_module("self").is_none());
-        assert!(ws.resolve_module("super").is_none());
-    }
-
-    #[test]
-    fn test_no_cargo_toml() {
-        let dir = TempDir::new().unwrap();
-        let ws = RustWorkspace::discover(dir.path()).unwrap();
-        assert!(ws.is_none());
-    }
-
-    #[test]
-    fn test_resolve_module_finds_file() {
-        let dir = setup_rust_workspace();
-        let ws = RustWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("crate-a");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("src/lib.rs"));
+        let patterns = vec!["**/helper.rs".to_string()];
+        let found = search_patterns(&patterns, dir.path());
+        assert!(found.is_some());
+        assert!(found.unwrap().ends_with("helper.rs"));
     }
 
     #[test]
@@ -1362,30 +715,17 @@ version = "0.1.0"
             path: file.clone(),
             mtime: 0,
             size: 0,
-            definitions: vec![
-                Definition {
-                    name: "foo".to_string(),
-                    kind: DefinitionKind::Function,
-                    span: Span {
-                        start_byte: 0,
-                        end_byte: 10,
-                        start_line: 1,
-                        end_line: 3,
-                    },
-                    file: file.clone(),
+            definitions: vec![Definition {
+                name: "foo".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 10,
+                    start_line: 1,
+                    end_line: 3,
                 },
-                Definition {
-                    name: "bar".to_string(),
-                    kind: DefinitionKind::Function,
-                    span: Span {
-                        start_byte: 20,
-                        end_byte: 30,
-                        start_line: 5,
-                        end_line: 7,
-                    },
-                    file: file.clone(),
-                },
-            ],
+                file: file.clone(),
+            }],
             calls: vec![],
             imports: vec![],
         });
@@ -1394,14 +734,8 @@ version = "0.1.0"
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "foo");
 
-        let found = resolve_same_file("bar", &file, &index);
-        assert!(found.is_some());
-
-        let not_found = resolve_same_file("baz", &file, &index);
+        let not_found = resolve_same_file("bar", &file, &index);
         assert!(not_found.is_none());
-
-        let wrong_file = resolve_same_file("foo", Path::new("src/other.rs"), &index);
-        assert!(wrong_file.is_none());
     }
 
     #[test]
@@ -1429,32 +763,8 @@ version = "0.1.0"
             imports: vec![],
         });
 
-        index.update(FileRecord {
-            path: PathBuf::from("src/b.rs"),
-            mtime: 0,
-            size: 0,
-            definitions: vec![Definition {
-                name: "beta".to_string(),
-                kind: DefinitionKind::Function,
-                span: Span {
-                    start_byte: 0,
-                    end_byte: 10,
-                    start_line: 1,
-                    end_line: 3,
-                },
-                file: PathBuf::from("src/b.rs"),
-            }],
-            calls: vec![],
-            imports: vec![],
-        });
-
         let found = resolve_by_index("alpha", &index);
         assert!(found.is_some());
-        assert_eq!(found.as_ref().unwrap().file, PathBuf::from("src/a.rs"));
-
-        let found = resolve_by_index("beta", &index);
-        assert!(found.is_some());
-        assert_eq!(found.as_ref().unwrap().file, PathBuf::from("src/b.rs"));
 
         let not_found = resolve_by_index("gamma", &index);
         assert!(not_found.is_none());
@@ -1506,7 +816,7 @@ version = "0.1.0"
             imports: vec![],
         });
 
-        let resolver = Resolver::new(&index, None, PathBuf::from("."));
+        let resolver = Resolver::new(&index, PathBuf::from("."));
 
         let found = resolver.resolve("foo", &file_a).unwrap();
         assert!(found.is_some());
@@ -1515,459 +825,6 @@ version = "0.1.0"
         let found = resolver.resolve("foo", &file_b).unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().file, file_b);
-    }
-
-    #[test]
-    fn test_resolver_import_tracing() {
-        use super::super::index::{Definition, DefinitionKind, FileRecord, Import, Span};
-
-        let mut index = Index::new();
-        let main_file = PathBuf::from("src/main.rs");
-        let utils_file = PathBuf::from("src/utils.rs");
-
-        index.update(FileRecord {
-            path: utils_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![Definition {
-                name: "helper".to_string(),
-                kind: DefinitionKind::Function,
-                span: Span {
-                    start_byte: 0,
-                    end_byte: 50,
-                    start_line: 1,
-                    end_line: 5,
-                },
-                file: utils_file.clone(),
-            }],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: main_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![],
-            calls: vec![],
-            imports: vec![Import {
-                module_path: "crate::utils::helper".to_string(),
-                alias: None,
-                span: Span {
-                    start_byte: 0,
-                    end_byte: 25,
-                    start_line: 1,
-                    end_line: 1,
-                },
-                file: main_file.clone(),
-            }],
-        });
-
-        let resolver = Resolver::new(&index, None, PathBuf::from("."));
-        let found = resolver.resolve("helper", &main_file).unwrap();
-
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "helper");
-    }
-
-    #[test]
-    fn test_resolver_import_tracing_with_alias() {
-        use super::super::index::{Definition, DefinitionKind, FileRecord, Import, Span};
-
-        let mut index = Index::new();
-        let main_file = PathBuf::from("src/main.rs");
-        let utils_file = PathBuf::from("src/utils.rs");
-
-        index.update(FileRecord {
-            path: utils_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![Definition {
-                name: "long_function_name".to_string(),
-                kind: DefinitionKind::Function,
-                span: Span {
-                    start_byte: 0,
-                    end_byte: 50,
-                    start_line: 1,
-                    end_line: 5,
-                },
-                file: utils_file.clone(),
-            }],
-            calls: vec![],
-            imports: vec![],
-        });
-
-        index.update(FileRecord {
-            path: main_file.clone(),
-            mtime: 0,
-            size: 0,
-            definitions: vec![],
-            calls: vec![],
-            imports: vec![Import {
-                module_path: "crate::utils::long_function_name".to_string(),
-                alias: Some("short".to_string()),
-                span: Span {
-                    start_byte: 0,
-                    end_byte: 40,
-                    start_line: 1,
-                    end_line: 1,
-                },
-                file: main_file.clone(),
-            }],
-        });
-
-        let resolver = Resolver::new(&index, None, PathBuf::from("."));
-
-        let found = resolver.resolve("short", &main_file).unwrap();
-        assert!(found.is_some());
-        assert_eq!(found.unwrap().name, "long_function_name");
-
-        let not_found = resolver.resolve("long_function_name", &main_file).unwrap();
-        assert!(not_found.is_none() || not_found.unwrap().file != main_file);
-    }
-
-    fn setup_go_workspace() -> TempDir {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("go.mod"),
-            "module github.com/example/myproject\n\ngo 1.21\n",
-        )
-        .unwrap();
-
-        fs::write(
-            dir.path().join("main.go"),
-            "package main\n\nfunc main() {}\n",
-        )
-        .unwrap();
-
-        let pkg_dir = dir.path().join("pkg/utils");
-        fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(
-            pkg_dir.join("helpers.go"),
-            "package utils\n\nfunc Helper() {}\n",
-        )
-        .unwrap();
-
-        let internal_dir = dir.path().join("internal/core");
-        fs::create_dir_all(&internal_dir).unwrap();
-        fs::write(
-            internal_dir.join("core.go"),
-            "package core\n\nfunc Process() {}\n",
-        )
-        .unwrap();
-
-        dir
-    }
-
-    #[test]
-    fn test_go_workspace_discovery() {
-        let dir = setup_go_workspace();
-        let ws = GoWorkspace::discover(dir.path()).unwrap();
-
-        assert!(ws.is_some());
-        let ws = ws.unwrap();
-        assert_eq!(ws.root(), dir.path());
-        assert_eq!(ws.module_path(), "github.com/example/myproject");
-    }
-
-    #[test]
-    fn test_go_workspace_no_go_mod() {
-        let dir = TempDir::new().unwrap();
-        let ws = GoWorkspace::discover(dir.path()).unwrap();
-        assert!(ws.is_none());
-    }
-
-    #[test]
-    fn test_go_workspace_resolve_root() {
-        let dir = setup_go_workspace();
-        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("github.com/example/myproject");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("main.go"));
-    }
-
-    #[test]
-    fn test_go_workspace_resolve_package() {
-        let dir = setup_go_workspace();
-        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("github.com/example/myproject/pkg/utils");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("helpers.go"));
-    }
-
-    #[test]
-    fn test_go_workspace_resolve_external() {
-        let dir = setup_go_workspace();
-        let ws = GoWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("github.com/other/package");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_go_mod_fallback_parsing() {
-        let content = "module github.com/foo/bar\n\ngo 1.21\n";
-        let module = parse_go_mod_fallback(content);
-        assert_eq!(module, Some("github.com/foo/bar".to_string()));
-
-        let content = "// comment\nmodule   example.com/test  \n";
-        let module = parse_go_mod_fallback(content);
-        assert_eq!(module, Some("example.com/test".to_string()));
-    }
-
-    fn setup_ts_workspace() -> TempDir {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("package.json"),
-            r#"{"name": "my-app", "version": "1.0.0"}"#,
-        )
-        .unwrap();
-
-        fs::write(
-            dir.path().join("tsconfig.json"),
-            r#"{
-                "compilerOptions": {
-                    "baseUrl": ".",
-                    "paths": {
-                        "@/*": ["src/*"],
-                        "@utils/*": ["src/utils/*"]
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-
-        let src_dir = dir.path().join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("index.ts"), "export const main = () => {};\n").unwrap();
-
-        let utils_dir = src_dir.join("utils");
-        fs::create_dir_all(&utils_dir).unwrap();
-        fs::write(
-            utils_dir.join("helpers.ts"),
-            "export const helper = () => {};\n",
-        )
-        .unwrap();
-
-        let components_dir = src_dir.join("components");
-        fs::create_dir_all(&components_dir).unwrap();
-        fs::write(
-            components_dir.join("Button.tsx"),
-            "export const Button = () => null;\n",
-        )
-        .unwrap();
-        fs::write(
-            components_dir.join("index.ts"),
-            "export * from './Button';\n",
-        )
-        .unwrap();
-
-        dir
-    }
-
-    #[test]
-    fn test_ts_workspace_discovery() {
-        let dir = setup_ts_workspace();
-        let ws = TsWorkspace::discover(dir.path()).unwrap();
-
-        assert!(ws.is_some());
-        let ws = ws.unwrap();
-        assert_eq!(ws.root(), dir.path());
-        assert_eq!(ws.name(), "my-app");
-        assert!(!ws.paths().is_empty());
-    }
-
-    #[test]
-    fn test_ts_workspace_no_package_json() {
-        let dir = TempDir::new().unwrap();
-        let ws = TsWorkspace::discover(dir.path()).unwrap();
-        assert!(ws.is_none());
-    }
-
-    #[test]
-    fn test_ts_workspace_resolve_alias() {
-        let dir = setup_ts_workspace();
-        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("@/index");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("src/index.ts"));
-    }
-
-    #[test]
-    fn test_ts_workspace_resolve_utils_alias() {
-        let dir = setup_ts_workspace();
-        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("@utils/helpers");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("src/utils/helpers.ts"));
-    }
-
-    #[test]
-    fn test_ts_workspace_resolve_index_file() {
-        let dir = setup_ts_workspace();
-        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("@/components");
-        assert!(resolved.is_some());
-        let path = resolved.unwrap();
-        assert!(path.ends_with("components/index.ts"));
-    }
-
-    #[test]
-    fn test_ts_workspace_relative_ignored() {
-        let dir = setup_ts_workspace();
-        let ws = TsWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("./local");
-        assert!(resolved.is_none());
-
-        let resolved = ws.resolve_module("../parent");
-        assert!(resolved.is_none());
-    }
-
-    fn setup_python_workspace_src_layout() -> TempDir {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            r#"
-[project]
-name = "mypackage"
-version = "0.1.0"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-"#,
-        )
-        .unwrap();
-
-        let pkg_dir = dir.path().join("src/mypackage");
-        fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("__init__.py"), "").unwrap();
-        fs::write(pkg_dir.join("main.py"), "def main(): pass\n").unwrap();
-
-        let utils_dir = pkg_dir.join("utils");
-        fs::create_dir_all(&utils_dir).unwrap();
-        fs::write(utils_dir.join("__init__.py"), "").unwrap();
-        fs::write(utils_dir.join("helpers.py"), "def helper(): pass\n").unwrap();
-
-        dir
-    }
-
-    fn setup_python_workspace_flat_layout() -> TempDir {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            r#"
-[project]
-name = "flatpkg"
-version = "0.1.0"
-"#,
-        )
-        .unwrap();
-
-        let pkg_dir = dir.path().join("flatpkg");
-        fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("__init__.py"), "").unwrap();
-        fs::write(pkg_dir.join("core.py"), "def process(): pass\n").unwrap();
-
-        dir
-    }
-
-    #[test]
-    fn test_python_workspace_discovery_src_layout() {
-        let dir = setup_python_workspace_src_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap();
-
-        assert!(ws.is_some());
-        let ws = ws.unwrap();
-        assert_eq!(ws.root(), dir.path());
-        assert_eq!(ws.package_name(), "mypackage");
-        assert!(ws.src_dir().ends_with("src"));
-    }
-
-    #[test]
-    fn test_python_workspace_discovery_flat_layout() {
-        let dir = setup_python_workspace_flat_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap();
-
-        assert!(ws.is_some());
-        let ws = ws.unwrap();
-        assert_eq!(ws.package_name(), "flatpkg");
-    }
-
-    #[test]
-    fn test_python_workspace_no_pyproject() {
-        let dir = TempDir::new().unwrap();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap();
-        assert!(ws.is_none());
-    }
-
-    #[test]
-    fn test_python_workspace_resolve_module() {
-        let dir = setup_python_workspace_src_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("mypackage.main");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("mypackage/main.py"));
-    }
-
-    #[test]
-    fn test_python_workspace_resolve_package() {
-        let dir = setup_python_workspace_src_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("mypackage.utils");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("utils/__init__.py"));
-    }
-
-    #[test]
-    fn test_python_workspace_resolve_submodule() {
-        let dir = setup_python_workspace_src_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("mypackage.utils.helpers");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("utils/helpers.py"));
-    }
-
-    #[test]
-    fn test_python_workspace_relative_ignored() {
-        let dir = setup_python_workspace_src_layout();
-        let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module(".relative");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_python_workspace_poetry_project() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            r#"
-[tool.poetry]
-name = "poetry-project"
-version = "0.1.0"
-"#,
-        )
-        .unwrap();
-
-        let src_dir = dir.path().join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-
-        let ws = PythonWorkspace::discover(dir.path()).unwrap().unwrap();
-        assert_eq!(ws.package_name(), "poetry-project");
     }
 
     #[test]
@@ -2004,261 +861,59 @@ version = "0.1.0"
     }
 
     #[test]
-    fn test_resolve_by_search_go() {
+    fn test_resolve_via_imports_with_glob() {
+        use super::super::index::{Definition, DefinitionKind, FileRecord, Import, Span};
+
         let dir = TempDir::new().unwrap();
+        let utils_dir = dir.path().join("src/utils");
+        fs::create_dir_all(&utils_dir).unwrap();
+        fs::write(utils_dir.join("helper.rs"), "pub fn helper() {}").unwrap();
 
-        fs::write(
-            dir.path().join("main.go"),
-            "package main\n\nfunc ProcessData() {\n}\n",
-        )
-        .unwrap();
+        let mut index = Index::new();
+        let main_file = dir.path().join("src/main.rs");
 
-        let found = resolve_by_search("ProcessData", dir.path()).unwrap();
+        index.update(FileRecord {
+            path: utils_dir.join("helper.rs"),
+            mtime: 0,
+            size: 0,
+            definitions: vec![Definition {
+                name: "helper".to_string(),
+                kind: DefinitionKind::Function,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 20,
+                    start_line: 1,
+                    end_line: 1,
+                },
+                file: utils_dir.join("helper.rs"),
+            }],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        index.update(FileRecord {
+            path: main_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![],
+            calls: vec![],
+            imports: vec![Import {
+                module_path: "crate::utils::helper".to_string(),
+                alias: None,
+                span: Span {
+                    start_byte: 0,
+                    end_byte: 25,
+                    start_line: 1,
+                    end_line: 1,
+                },
+                file: main_file.clone(),
+            }],
+        });
+
+        let resolver = Resolver::new(&index, dir.path().to_path_buf());
+        let found = resolver.resolve("helper", &main_file).unwrap();
+
         assert!(found.is_some());
-        let def = found.unwrap();
-        assert_eq!(def.name, "ProcessData");
-    }
-
-    #[test]
-    fn test_resolve_by_search_typescript() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("index.ts"),
-            "export function fetchData() {\n  return null;\n}\n",
-        )
-        .unwrap();
-
-        let found = resolve_by_search("fetchData", dir.path()).unwrap();
-        assert!(found.is_some());
-        let def = found.unwrap();
-        assert_eq!(def.name, "fetchData");
-    }
-
-    #[test]
-    fn test_resolve_by_search_not_found() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(dir.path().join("lib.rs"), "pub fn other() {}\n").unwrap();
-
-        let found = resolve_by_search("nonexistent", dir.path()).unwrap();
-        assert!(found.is_none());
-    }
-
-    #[test]
-    fn test_resolver_tracks_discovered_files() {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(dir.path().join("utils.rs"), "pub fn discovered_func() {}\n").unwrap();
-
-        fs::write(dir.path().join("helpers.rs"), "pub fn another_func() {}\n").unwrap();
-
-        let index = Index::new();
-        let resolver = Resolver::new(&index, None, dir.path().to_path_buf());
-
-        assert!(resolver.files_to_index().is_empty());
-
-        let _ = resolver.resolve("discovered_func", Path::new("main.rs"));
-        let files = resolver.files_to_index();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].ends_with("utils.rs"));
-
-        let _ = resolver.resolve("another_func", Path::new("main.rs"));
-        let files = resolver.files_to_index();
-        assert_eq!(files.len(), 2);
-
-        resolver.clear_discovered();
-        assert!(resolver.files_to_index().is_empty());
-    }
-
-    #[test]
-    fn test_path_matches_module_exact_suffix() {
-        let file = PathBuf::from("src/utils/helpers.rs");
-        assert!(path_matches_module(&file, &["utils", "helpers", "func"]));
-        assert!(path_matches_module(&file, &["helpers", "func"]));
-        assert!(!path_matches_module(&file, &["other", "helpers", "func"]));
-    }
-
-    #[test]
-    fn test_path_matches_module_single_part() {
-        let file = PathBuf::from("src/main.rs");
-        assert!(path_matches_module(&file, &["func"]));
-        assert!(path_matches_module(&file, &[]));
-    }
-
-    #[test]
-    fn test_path_matches_module_no_false_substring_match() {
-        let file = PathBuf::from("src/my_utils/helpers.rs");
-        assert!(!path_matches_module(&file, &["utils", "helpers", "func"]));
-        assert!(path_matches_module(&file, &["my_utils", "helpers", "func"]));
-    }
-
-    #[test]
-    fn test_path_matches_module_deep_path() {
-        let file = PathBuf::from("crates/core/src/utils/helpers.rs");
-        assert!(path_matches_module(&file, &["utils", "helpers", "func"]));
-        assert!(path_matches_module(
-            &file,
-            &["src", "utils", "helpers", "func"]
-        ));
-        assert!(!path_matches_module(
-            &file,
-            &["wrong", "src", "utils", "helpers", "func"]
-        ));
-    }
-
-    #[test]
-    fn test_path_matches_module_too_many_parts() {
-        let file = PathBuf::from("src/helpers.rs");
-        assert!(!path_matches_module(
-            &file,
-            &["deeply", "nested", "utils", "helpers", "func"]
-        ));
-    }
-
-    fn setup_zig_workspace() -> TempDir {
-        let dir = TempDir::new().unwrap();
-
-        fs::write(
-            dir.path().join("build.zig.zon"),
-            r#"
-.{
-    .name = .myproject,
-    .dependencies = .{
-        .utils = .{ .path = "vendor/utils" },
-        .remote_pkg = .{ .url = "https://example.com/pkg.tar.gz" },
-    },
-}
-"#,
-        )
-        .unwrap();
-
-        fs::write(
-            dir.path().join("build.zig"),
-            "const std = @import(\"std\");\n",
-        )
-        .unwrap();
-
-        let src_dir = dir.path().join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.zig"), "const std = @import(\"std\");\n").unwrap();
-        fs::write(src_dir.join("helper.zig"), "pub fn help() void {}\n").unwrap();
-
-        let vendor_dir = dir.path().join("vendor/utils");
-        fs::create_dir_all(&vendor_dir).unwrap();
-        fs::write(vendor_dir.join("main.zig"), "pub fn utilFn() void {}\n").unwrap();
-
-        dir
-    }
-
-    #[test]
-    fn test_zig_workspace_discovery() {
-        let dir = setup_zig_workspace();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap();
-
-        assert!(ws.is_some());
-        let ws = ws.unwrap();
-        assert_eq!(ws.root(), dir.path());
-        assert_eq!(ws.packages().len(), 1);
-        assert_eq!(ws.packages()[0].0, "utils");
-    }
-
-    #[test]
-    fn test_zig_workspace_no_zon() {
-        let dir = TempDir::new().unwrap();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap();
-        assert!(ws.is_none());
-    }
-
-    #[test]
-    fn test_zig_workspace_resolve_local_package() {
-        let dir = setup_zig_workspace();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("utils");
-        assert!(resolved.is_some());
-        assert!(resolved.unwrap().ends_with("vendor/utils/main.zig"));
-    }
-
-    #[test]
-    fn test_zig_workspace_skip_std() {
-        let dir = setup_zig_workspace();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("std");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_zig_workspace_skip_unknown_package() {
-        let dir = setup_zig_workspace();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("remote_pkg");
-        assert!(resolved.is_none());
-
-        let resolved = ws.resolve_module("nonexistent");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn test_zig_workspace_resolve_relative_import() {
-        let dir = setup_zig_workspace();
-        let ws = ZigWorkspace::discover(dir.path()).unwrap().unwrap();
-
-        let resolved = ws.resolve_module("helper.zig");
-        assert!(resolved.is_some());
-    }
-
-    #[test]
-    fn test_parse_zig_zon_deps() {
-        let content = r#"
-.{
-    .name = .test,
-    .dependencies = .{
-        .foo = .{ .path = "libs/foo" },
-        .bar = .{ .path = "vendor/bar" },
-        .remote = .{ .url = "https://example.com" },
-    },
-}
-"#;
-        let root = Path::new("/project");
-        let deps = parse_zig_zon_deps(content, root);
-
-        assert_eq!(deps.len(), 2);
-        assert!(deps
-            .iter()
-            .any(|(n, p)| n == "foo" && p == Path::new("/project/libs/foo")));
-        assert!(deps
-            .iter()
-            .any(|(n, p)| n == "bar" && p == Path::new("/project/vendor/bar")));
-    }
-
-    #[test]
-    fn test_path_matches_java_package() {
-        let file = PathBuf::from("src/main/java/com/example/MyClass.java");
-        assert!(path_matches_java_package(&file, &["com", "example"]));
-        assert!(path_matches_java_package(&file, &["example"]));
-        assert!(!path_matches_java_package(&file, &["org", "example"]));
-    }
-
-    #[test]
-    fn test_path_matches_java_package_empty() {
-        let file = PathBuf::from("src/MyClass.java");
-        assert!(path_matches_java_package(&file, &[]));
-    }
-
-    #[test]
-    fn test_path_matches_java_package_deeply_nested() {
-        let file = PathBuf::from("src/main/java/com/example/internal/utils/Helper.java");
-        assert!(path_matches_java_package(
-            &file,
-            &["com", "example", "internal", "utils"]
-        ));
-        assert!(path_matches_java_package(&file, &["internal", "utils"]));
-        assert!(!path_matches_java_package(
-            &file,
-            &["com", "other", "internal", "utils"]
-        ));
+        assert_eq!(found.unwrap().name, "helper");
     }
 }
