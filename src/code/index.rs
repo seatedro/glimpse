@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const INDEX_FILE: &str = "index.bin";
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Span {
@@ -44,6 +44,7 @@ pub enum DefinitionKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Call {
     pub callee: String,
+    pub qualifier: Option<String>,
     pub span: Span,
     pub file: PathBuf,
     pub caller: Option<String>,
@@ -210,6 +211,7 @@ mod tests {
             }],
             calls: vec![Call {
                 callee: "other_fn".to_string(),
+                qualifier: None,
                 span: Span {
                     start_byte: 50,
                     end_byte: 60,

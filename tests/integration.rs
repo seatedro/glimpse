@@ -66,6 +66,7 @@ mod call_graph_tests {
             size: 0,
             definitions: vec![make_def("caller", &file_a)],
             calls: vec![Call {
+                qualifier: None,
                 callee: "callee".to_string(),
                 caller: Some("caller".to_string()),
                 span: make_span(),
@@ -130,6 +131,7 @@ mod call_graph_tests {
             size: 0,
             definitions: vec![make_def("main", &file_main)],
             calls: vec![Call {
+                qualifier: None,
                 callee: "helper".to_string(),
                 caller: Some("main".to_string()),
                 span: make_span(),
@@ -168,6 +170,7 @@ mod call_graph_tests {
             size: 0,
             definitions: vec![make_def("entry", &file_a)],
             calls: vec![Call {
+                qualifier: None,
                 callee: "middle".to_string(),
                 caller: Some("entry".to_string()),
                 span: make_span(),
@@ -182,6 +185,7 @@ mod call_graph_tests {
             size: 0,
             definitions: vec![make_def("middle", &file_b)],
             calls: vec![Call {
+                qualifier: None,
                 callee: "leaf".to_string(),
                 caller: Some("middle".to_string()),
                 span: make_span(),
@@ -206,7 +210,10 @@ mod call_graph_tests {
 
         assert_eq!(transitive.len(), 2);
 
-        let names: HashSet<_> = transitive.iter().map(|n| n.definition.name.as_str()).collect();
+        let names: HashSet<_> = transitive
+            .iter()
+            .map(|n| n.definition.name.as_str())
+            .collect();
         assert!(names.contains("middle"));
         assert!(names.contains("leaf"));
 
@@ -232,6 +239,7 @@ mod call_graph_tests {
             size: 0,
             definitions: vec![make_def("caller", &file_a)],
             calls: vec![Call {
+                qualifier: None,
                 callee: "nonexistent".to_string(),
                 caller: Some("caller".to_string()),
                 span: make_span(),
@@ -369,7 +377,12 @@ def format_output(s):
         let extractor = Extractor::new("python").unwrap();
 
         index_file(&mut index, &extractor, &dir.path().join("main.py"), main_py);
-        index_file(&mut index, &extractor, &dir.path().join("utils.py"), utils_py);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("utils.py"),
+            utils_py,
+        );
 
         let graph = CallGraph::build(&index);
 
@@ -421,7 +434,12 @@ function format(s: string): string {
         let extractor = Extractor::new("typescript").unwrap();
 
         index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
-        index_file(&mut index, &extractor, &dir.path().join("utils.ts"), utils_ts);
+        index_file(
+            &mut index,
+            &extractor,
+            &dir.path().join("utils.ts"),
+            utils_ts,
+        );
 
         let graph = CallGraph::build(&index);
 

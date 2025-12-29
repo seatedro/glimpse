@@ -80,6 +80,10 @@ pub struct CodeArgs {
     /// Output file (default: stdout)
     #[arg(short = 'f', long)]
     pub file: Option<PathBuf>,
+
+    /// Strict mode: only resolve calls via imports (no global name matching)
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -231,7 +235,9 @@ impl Cli {
 
         cli.max_size = cli.max_size.or(Some(config.max_size));
         cli.max_depth = cli.max_depth.or(Some(config.max_depth));
-        cli.output = cli.output.or(Some(config.default_output_format.clone().into()));
+        cli.output = cli
+            .output
+            .or(Some(config.default_output_format.clone().into()));
 
         if let Some(mut excludes) = cli.exclude.take() {
             excludes.extend(config.default_excludes.clone());

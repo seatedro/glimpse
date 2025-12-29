@@ -25,8 +25,12 @@ call_query = """
   function: [
     (identifier) @name
     (parenthesized_expression (identifier) @name)
-    (selector_expression field: (field_identifier) @name)
-    (parenthesized_expression (selector_expression field: (field_identifier) @name))
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name)
+    (parenthesized_expression (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name))
   ]) @reference.call
 """
 import_query = """
@@ -61,7 +65,9 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (field_expression member: (identifier) @name)
+    (field_expression
+      operand: (_) @qualifier
+      member: (identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -99,7 +105,9 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (field_expression field: (field_identifier) @name)
+    (field_expression
+      argument: (_) @qualifier
+      field: (field_identifier) @name)
     (parenthesized_expression (identifier) @name)
   ]) @reference.call
 """
@@ -178,9 +186,13 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (qualified_identifier name: (identifier) @name)
+    (qualified_identifier
+      scope: (_) @qualifier
+      name: (identifier) @name)
     (template_function name: (identifier) @name)
-    (field_expression field: (field_identifier) @name)
+    (field_expression
+      argument: (_) @qualifier
+      field: (field_identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -247,7 +259,9 @@ call_query = """
 (call
   function: [
     (identifier) @name
-    (attribute attribute: (identifier) @name)
+    (attribute
+      object: (_) @qualifier
+      attribute: (identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -309,7 +323,9 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (member_expression property: (property_identifier) @name)
+    (member_expression
+      object: (_) @qualifier
+      property: (property_identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -345,8 +361,12 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (scoped_identifier name: (identifier) @name)
-    (field_expression field: (field_identifier) @name)
+    (scoped_identifier
+      path: (_) @qualifier
+      name: (identifier) @name)
+    (field_expression
+      value: (_) @qualifier  
+      field: (field_identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -408,7 +428,9 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (member_expression property: (property_identifier) @name)
+    (member_expression
+      object: (_) @qualifier
+      property: (property_identifier) @name)
   ]) @reference.call
 """
 import_query = """
@@ -460,6 +482,7 @@ definition_query = """
 """
 call_query = """
 (method_invocation
+  object: (_)? @qualifier
   name: (identifier) @name) @reference.call
 (object_creation_expression
   type: (type_identifier) @name) @reference.call
@@ -519,7 +542,9 @@ call_query = """
 (call_expression
   function: [
     (identifier) @name
-    (field_expression field: (identifier) @name)
+    (field_expression
+      value: (_) @qualifier
+      field: (identifier) @name)
   ]) @reference.call
 """
 import_query = """

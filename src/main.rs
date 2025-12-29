@@ -262,7 +262,10 @@ fn apply_repo_config(args: &mut Cli, repo_config: &RepoConfig) {
 }
 
 fn handle_code_command(args: &CodeArgs) -> Result<()> {
-    let root = args.root.canonicalize().unwrap_or_else(|_| args.root.clone());
+    let root = args
+        .root
+        .canonicalize()
+        .unwrap_or_else(|_| args.root.clone());
     let target = FunctionTarget::parse(&args.target)?;
 
     let mut index = load_index(&root)?.unwrap_or_else(Index::new);
@@ -272,7 +275,7 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
         save_index(&index, &root)?;
     }
 
-    let graph = CallGraph::build(&index);
+    let graph = CallGraph::build_with_options(&index, args.strict);
 
     let node_id = if let Some(ref file) = target.file {
         let file_path = root.join(file);
@@ -288,16 +291,14 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
     };
 
     let Some(node_id) = node_id else {
-        bail!(
-            "function '{}' not found in index",
-            target.function
-        );
+        bail!("function '{}' not found in index", target.function);
     };
 
     let depth = args.depth.unwrap_or(1);
-    
+
     let definitions = if args.callers {
-        graph.get_callers_to_depth(node_id, depth)
+        graph
+            .get_callers_to_depth(node_id, depth)
             .into_iter()
             .filter_map(|id| graph.get_node(id).map(|n| &n.definition))
             .collect()
@@ -416,7 +417,13 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
             }
             let (mtime, size) = file_fingerprint(path).ok()?;
             if index.is_stale(rel_path, mtime, size) {
-                Some((path.to_path_buf(), rel_path.to_path_buf(), ext.to_string(), mtime, size))
+                Some((
+                    path.to_path_buf(),
+                    rel_path.to_path_buf(),
+                    ext.to_string(),
+                    mtime,
+                    size,
+                ))
             } else {
                 None
             }

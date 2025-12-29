@@ -13,6 +13,7 @@ pub struct QuerySet {
     def_name_idx: u32,
     def_kind_indices: Vec<(u32, DefinitionKind)>,
     call_name_idx: u32,
+    call_qualifier_idx: Option<u32>,
     import_path_indices: Vec<u32>,
     import_alias_idx: Option<u32>,
 }
@@ -41,6 +42,7 @@ impl QuerySet {
         let def_kind_indices = Self::build_definition_kind_indices(&definitions);
 
         let call_name_idx = calls.capture_index_for_name("name").unwrap_or(u32::MAX);
+        let call_qualifier_idx = calls.capture_index_for_name("qualifier");
 
         let (import_path_indices, import_alias_idx) = if let Some(ref q) = imports {
             let path_indices = ["path", "source", "system_path", "local_path", "module"]
@@ -60,6 +62,7 @@ impl QuerySet {
             def_name_idx,
             def_kind_indices,
             call_name_idx,
+            call_qualifier_idx,
             import_path_indices,
             import_alias_idx,
         })
@@ -169,12 +172,16 @@ impl Extractor {
 
         while let Some(m) = matches.next() {
             let mut callee: Option<&str> = None;
+            let mut qualifier: Option<&str> = None;
             let mut call_node: Option<Node> = None;
 
             for capture in m.captures {
                 if capture.index == self.queries.call_name_idx {
                     callee = capture.node.utf8_text(source).ok();
                     call_node = Some(capture.node);
+                }
+                if Some(capture.index) == self.queries.call_qualifier_idx {
+                    qualifier = capture.node.utf8_text(source).ok();
                 }
             }
 
@@ -183,6 +190,7 @@ impl Extractor {
 
                 calls.push(Call {
                     callee: callee.to_string(),
+                    qualifier: qualifier.map(|s| s.to_string()),
                     span: node_to_span(&node),
                     file: path.to_path_buf(),
                     caller,

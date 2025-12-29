@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use super::index::{Call, Definition, Index};
+use super::index::{Definition, Index};
+use super::resolve::Resolver;
 
 pub type NodeId = usize;
 
@@ -31,6 +32,11 @@ impl CallGraph {
     }
 
     pub fn build(index: &Index) -> Self {
+        Self::build_with_options(index, false)
+    }
+
+    pub fn build_with_options(index: &Index, strict: bool) -> Self {
+        let resolver = Resolver::with_strict(index, strict);
         let mut graph = CallGraph::new();
 
         for def in index.definitions() {
@@ -38,21 +44,29 @@ impl CallGraph {
         }
 
         for call in index.calls() {
-            if let Some((caller_id, callee_id)) = Self::link_call(&graph, call) {
-                graph.add_edge(caller_id, callee_id);
-            }
+            let caller_id = call
+                .caller
+                .as_ref()
+                .and_then(|name| graph.find_node_by_file_and_name(&call.file, name));
+
+            let Some(caller_id) = caller_id else {
+                continue;
+            };
+
+            let callee_def = resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file);
+
+            let callee_id = if let Some(def) = callee_def {
+                graph
+                    .find_node_by_file_and_name(&def.file, &def.name)
+                    .unwrap_or_else(|| graph.add_definition(def))
+            } else {
+                continue;
+            };
+
+            graph.add_edge(caller_id, callee_id);
         }
 
         graph
-    }
-
-    fn link_call(graph: &CallGraph, call: &Call) -> Option<(NodeId, NodeId)> {
-        let caller_id = call
-            .caller
-            .as_ref()
-            .and_then(|name| graph.find_node_by_file_and_name(&call.file, name))?;
-        let callee_id = graph.find_node(&call.callee)?;
-        Some((caller_id, callee_id))
     }
 
     fn add_definition(&mut self, definition: Definition) -> NodeId {
@@ -338,6 +352,7 @@ mod tests {
     fn make_call(callee: &str, caller: Option<&str>, file: &str) -> Call {
         Call {
             callee: callee.to_string(),
+            qualifier: None,
             span: make_span(),
             file: PathBuf::from(file),
             caller: caller.map(|s| s.to_string()),
