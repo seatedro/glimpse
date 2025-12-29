@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use tiktoken_rs::get_bpe_from_model;
 use tokenizers::Tokenizer as HfTokenizer;
 
-use crate::types::FileEntry;
+use super::types::FileEntry;
 
 pub enum TokenizerBackend {
     Tiktoken(tiktoken_rs::CoreBPE),

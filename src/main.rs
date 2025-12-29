@@ -6,14 +6,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use glimpse_core::{
-    get_config_path, load_config, load_repo_config, save_config, save_repo_config,
-    BackwardsCompatOutputFormat, RepoConfig,
-};
-use glimpse_fetch::{GitProcessor, UrlProcessor};
-
 use crate::analyzer::process_directory;
 use crate::cli::Cli;
+use glimpse::fetch::{GitProcessor, UrlProcessor};
+use glimpse::{
+    get_config_path, load_config, load_repo_config, save_config, save_repo_config, RepoConfig,
+};
 
 fn is_url_or_git(path: &str) -> bool {
     GitProcessor::is_git_url(path) || path.starts_with("http://") || path.starts_with("https://")
@@ -205,9 +203,7 @@ fn create_repo_config_from_args(args: &Cli) -> RepoConfig {
         exclude: args.exclude.clone(),
         max_size: args.max_size,
         max_depth: args.max_depth,
-        output: args
-            .get_output_format()
-            .map(BackwardsCompatOutputFormat::from),
+        output: args.get_output_format(),
         file: args.file.clone(),
         hidden: Some(args.hidden),
         no_ignore: Some(args.no_ignore),
@@ -232,8 +228,7 @@ fn apply_repo_config(args: &mut Cli, repo_config: &RepoConfig) {
     }
 
     if let Some(ref output) = repo_config.output {
-        let output_format: glimpse_core::OutputFormat = (*output).clone().into();
-        args.output = Some(output_format.into());
+        args.output = Some(output.clone().into());
     }
 
     if let Some(ref file) = repo_config.file {

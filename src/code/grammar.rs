@@ -45,7 +45,7 @@ pub struct Registry {
 
 impl Registry {
     pub fn load() -> Result<Self> {
-        let registry_toml = include_str!("../../../registry.toml");
+        let registry_toml = include_str!("../../registry.toml");
         Self::from_str(registry_toml)
     }
 

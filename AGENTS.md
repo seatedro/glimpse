@@ -39,7 +39,6 @@ cargo run -- --help            # show help
 
 ```bash
 cargo test                              # run all tests
-cargo test --package glimpse-core       # run tests for specific crate
 cargo test test_name                    # run single test by name
 cargo test test_name -- --nocapture     # run test with stdout
 cargo test -- --test-threads=1         # run tests sequentially
@@ -58,12 +57,20 @@ cargo clippy -- -D warnings    # fail on warnings (CI)
 
 ```
 glimpse/
-├── crates/
-│   ├── core/       # shared types, config, tokenizer, source detection
-│   ├── fetch/      # git clone + url/html processing
-│   ├── tui/        # file picker, output formatting, pdf generation
-│   └── cli/        # binary crate, arg parsing, directory analyzer
-└── languages.yml   # language definitions for source detection
+├── src/
+│   ├── main.rs        # binary entry point
+│   ├── lib.rs         # library root
+│   ├── cli.rs         # CLI arg parsing
+│   ├── analyzer.rs    # directory processing
+│   ├── output.rs      # output formatting
+│   ├── core/          # config, tokenizer, types, source detection
+│   ├── fetch/         # git clone, url/html processing
+│   ├── tui/           # file picker
+│   └── code/          # code analysis (extract, graph, index, resolve)
+├── tests/             # integration tests
+├── languages.yml      # language definitions for source detection
+├── registry.toml      # tree-sitter grammar registry
+└── build.rs           # generates language data from languages.yml
 ```
 
 ## Code Style
@@ -152,17 +159,6 @@ pub struct FileEntry {
 - Use descriptive test names: `test_<what>_<condition>`
 - Use `tempfile` for filesystem tests
 - Group related assertions
-
-### Workspace Dependencies
-
-Always use workspace dependencies in crate Cargo.toml:
-
-```toml
-[dependencies]
-anyhow.workspace = true
-serde.workspace = true
-glimpse-core.workspace = true
-```
 
 ### Patterns to Follow
 

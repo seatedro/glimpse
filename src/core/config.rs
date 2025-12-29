@@ -2,60 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Exclude, OutputFormat};
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(into = "String")]
-pub struct BackwardsCompatOutputFormat(OutputFormat);
-
-impl From<BackwardsCompatOutputFormat> for String {
-    fn from(format: BackwardsCompatOutputFormat) -> Self {
-        match format.0 {
-            OutputFormat::Tree => "tree".to_string(),
-            OutputFormat::Files => "files".to_string(),
-            OutputFormat::Both => "both".to_string(),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for BackwardsCompatOutputFormat {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum FormatOrString {
-            Format(OutputFormat),
-            String(String),
-        }
-
-        match FormatOrString::deserialize(deserializer)? {
-            FormatOrString::Format(format) => Ok(BackwardsCompatOutputFormat(format)),
-            FormatOrString::String(s) => {
-                let format = match s.to_lowercase().as_str() {
-                    "tree" => OutputFormat::Tree,
-                    "files" => OutputFormat::Files,
-                    "both" => OutputFormat::Both,
-                    _ => OutputFormat::Both,
-                };
-                Ok(BackwardsCompatOutputFormat(format))
-            }
-        }
-    }
-}
-
-impl From<OutputFormat> for BackwardsCompatOutputFormat {
-    fn from(format: OutputFormat) -> Self {
-        BackwardsCompatOutputFormat(format)
-    }
-}
-
-impl From<BackwardsCompatOutputFormat> for OutputFormat {
-    fn from(format: BackwardsCompatOutputFormat) -> Self {
-        format.0
-    }
-}
+use super::types::{Exclude, OutputFormat};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -66,7 +13,7 @@ pub struct Config {
     pub max_depth: usize,
 
     #[serde(default = "default_output_format")]
-    pub default_output_format: BackwardsCompatOutputFormat,
+    pub default_output_format: OutputFormat,
 
     #[serde(default)]
     pub default_excludes: Vec<Exclude>,
@@ -119,8 +66,8 @@ fn default_max_depth() -> usize {
     20
 }
 
-fn default_output_format() -> BackwardsCompatOutputFormat {
-    BackwardsCompatOutputFormat(OutputFormat::Both)
+fn default_output_format() -> OutputFormat {
+    OutputFormat::Both
 }
 
 fn default_excludes() -> Vec<Exclude> {
@@ -182,7 +129,7 @@ pub struct RepoConfig {
     pub exclude: Option<Vec<Exclude>>,
     pub max_size: Option<u64>,
     pub max_depth: Option<usize>,
-    pub output: Option<BackwardsCompatOutputFormat>,
+    pub output: Option<OutputFormat>,
     pub file: Option<PathBuf>,
     pub hidden: Option<bool>,
     pub no_ignore: Option<bool>,

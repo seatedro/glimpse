@@ -6,7 +6,7 @@ use base64::Engine;
 use num_format::{Buffer, Locale};
 use printpdf::*;
 
-use glimpse_core::{FileEntry, OutputFormat, TokenCounter};
+use glimpse::{FileEntry, OutputFormat, TokenCounter};
 
 use crate::cli::Cli;
 

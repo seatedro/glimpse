@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 
-use glimpse_core::{BackwardsCompatOutputFormat, Config, Exclude, OutputFormat, TokenizerType};
+use glimpse::{Config, Exclude, OutputFormat, TokenizerType};
 
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum CliOutputFormat {
@@ -29,13 +29,6 @@ impl From<OutputFormat> for CliOutputFormat {
             OutputFormat::Files => CliOutputFormat::Files,
             OutputFormat::Both => CliOutputFormat::Both,
         }
-    }
-}
-
-impl From<BackwardsCompatOutputFormat> for CliOutputFormat {
-    fn from(format: BackwardsCompatOutputFormat) -> Self {
-        let output_format: OutputFormat = format.into();
-        output_format.into()
     }
 }
 
@@ -138,8 +131,7 @@ impl Cli {
 
         cli.max_size = cli.max_size.or(Some(config.max_size));
         cli.max_depth = cli.max_depth.or(Some(config.max_depth));
-        let output_format: OutputFormat = config.default_output_format.clone().into();
-        cli.output = cli.output.or(Some(CliOutputFormat::from(output_format)));
+        cli.output = cli.output.or(Some(config.default_output_format.clone().into()));
 
         if let Some(mut excludes) = cli.exclude.take() {
             excludes.extend(config.default_excludes.clone());

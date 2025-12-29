@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use glimpse_code::extract::Extractor;
-use glimpse_code::index::DefinitionKind;
+use glimpse::code::extract::Extractor;
+use glimpse::code::index::DefinitionKind;
 use tree_sitter::Parser;
 
 fn parse_and_extract(lang: &str, source: &str) -> ExtractResult {
@@ -21,9 +21,9 @@ fn parse_and_extract(lang: &str, source: &str) -> ExtractResult {
 }
 
 struct ExtractResult {
-    definitions: Vec<glimpse_code::index::Definition>,
-    calls: Vec<glimpse_code::index::Call>,
-    imports: Vec<glimpse_code::index::Import>,
+    definitions: Vec<glimpse::code::index::Definition>,
+    calls: Vec<glimpse::code::index::Call>,
+    imports: Vec<glimpse::code::index::Import>,
 }
 
 mod rust {

@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use glimpse_code::extract::Extractor;
-use glimpse_code::graph::CallGraph;
-use glimpse_code::index::{file_fingerprint, FileRecord, Index};
-use glimpse_code::resolve::{resolve_by_index, resolve_by_search, resolve_same_file, Resolver};
+use glimpse::code::extract::Extractor;
+use glimpse::code::graph::CallGraph;
+use glimpse::code::index::{file_fingerprint, FileRecord, Index};
+use glimpse::code::resolve::{resolve_by_index, resolve_by_search, resolve_same_file, Resolver};
 use tree_sitter::Parser;
 
 fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &str) {
@@ -29,7 +29,7 @@ fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &st
 
 mod resolver_tests {
     use super::*;
-    use glimpse_code::index::{Call, Definition, DefinitionKind, FileRecord, Import, Span};
+    use glimpse::code::index::{Call, Definition, DefinitionKind, FileRecord, Import, Span};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -363,7 +363,7 @@ mod resolver_tests {
 
 mod call_graph_resolution {
     use super::*;
-    use glimpse_code::index::{Call, Definition, DefinitionKind, FileRecord, Span};
+    use glimpse::code::index::{Call, Definition, DefinitionKind, FileRecord, Span};
     use tempfile::TempDir;
 
     fn make_span() -> Span {
@@ -849,7 +849,7 @@ type Config struct {
 
 mod index_persistence {
     use super::*;
-    use glimpse_code::index::{clear_index, load_index, save_index};
+    use glimpse::code::index::{clear_index, load_index, save_index};
     use tempfile::TempDir;
 
     #[test]

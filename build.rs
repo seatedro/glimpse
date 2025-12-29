@@ -20,12 +20,7 @@ struct Language {
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let languages_path = Path::new(&manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("languages.yml");
+    let languages_path = Path::new(&manifest_dir).join("languages.yml");
 
     println!(
         "cargo:rerun-if-changed={}",

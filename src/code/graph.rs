@@ -262,8 +262,8 @@ impl CallGraph {
 
 #[cfg(test)]
 mod tests {
+    use super::super::index::{Call, DefinitionKind, FileRecord, Span};
     use super::*;
-    use crate::index::{Call, DefinitionKind, FileRecord, Span};
     use std::path::PathBuf;
 
     fn make_span() -> Span {

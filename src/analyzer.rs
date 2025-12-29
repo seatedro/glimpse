@@ -6,8 +6,8 @@ use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use glimpse_core::{is_source_file, Exclude, FileEntry, OutputFormat, TokenCounter, TokenizerType};
-use glimpse_tui::FilePicker;
+use glimpse::tui::FilePicker;
+use glimpse::{is_source_file, Exclude, FileEntry, OutputFormat, TokenCounter, TokenizerType};
 
 use crate::cli::Cli;
 use crate::output::{display_token_counts, generate_output, generate_pdf, handle_output};
