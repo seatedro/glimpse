@@ -273,7 +273,11 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
     let needs_update = index_directory(&root, &mut index)?;
     let mut needs_save = needs_update > 0;
 
-    if args.precise {
+    // Only run LSP resolution if:
+    // 1. --precise is requested
+    // 2. Either files were updated OR no calls have been resolved yet (first --precise run)
+    let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+    if args.precise && (needs_update > 0 || !has_any_resolved) {
         let resolved = resolve_calls_with_lsp(&root, &mut index)?;
         if resolved > 0 {
             needs_save = true;
@@ -284,7 +288,9 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
         save_index(&index, &root)?;
     }
 
-    let graph = CallGraph::build_precise(&index, &root, args.strict, args.precise);
+    // After LSP resolution, use build_with_options which checks call.resolved first
+    // This avoids creating another LSP resolver and re-trying failed calls
+    let graph = CallGraph::build_with_options(&index, args.strict);
 
     let node_id = if let Some(ref file) = target.file {
         let file_path = root.join(file);
@@ -344,7 +350,9 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
 
             let updated = index_directory(&root, &mut index)?;
 
-            if *precise {
+            // Only run LSP resolution if files were updated or no calls resolved yet
+            let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+            if *precise && (updated > 0 || !has_any_resolved) {
                 let resolved = resolve_calls_with_lsp(&root, &mut index)?;
                 if resolved > 0 {
                     eprintln!("Resolved {} calls with LSP", resolved);
@@ -577,10 +585,9 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
     pb.finish_and_clear();
 
     let stats = lsp_resolver.stats();
-    eprintln!(
-        "LSP stats: {} resolved, {} external, {} no definition, {} not indexed, {} no match",
-        stats.resolved, stats.external, stats.no_definition, stats.not_indexed, stats.no_match
-    );
+    if !stats.by_server.is_empty() {
+        eprintln!("LSP: {}", stats);
+    }
 
     Ok(resolved)
 }

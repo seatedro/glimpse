@@ -1,10 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-use indicatif::{ProgressBar, ProgressStyle};
-
 use super::index::{Definition, Index};
-use super::lsp::LspResolver;
 use super::resolve::Resolver;
 
 pub type NodeId = usize;
@@ -81,73 +78,6 @@ impl CallGraph {
         }
 
         graph
-    }
-
-    pub fn build_with_lsp(index: &Index, root: &Path) -> Self {
-        let heuristic_resolver = Resolver::with_strict(index, false);
-        let mut graph = CallGraph::new();
-
-        for def in index.definitions() {
-            graph.add_definition(def.clone());
-        }
-
-        let calls: Vec<_> = index.calls().collect();
-        let total = calls.len();
-
-        if total == 0 {
-            return graph;
-        }
-
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .expect("valid template")
-                .progress_chars("#>-"),
-        );
-        pb.set_message("initializing LSP...");
-
-        let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
-
-        pb.set_message("resolving calls");
-
-        for call in &calls {
-            pb.inc(1);
-
-            let caller_id = call
-                .caller
-                .as_ref()
-                .and_then(|name| graph.find_node_by_file_and_name(&call.file, name));
-
-            let Some(caller_id) = caller_id else {
-                continue;
-            };
-
-            let callee_def = lsp_resolver.resolve_call(call, index).or_else(|| {
-                heuristic_resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file)
-            });
-
-            let callee_id = if let Some(def) = callee_def {
-                graph
-                    .find_node_by_file_and_name(&def.file, &def.name)
-                    .unwrap_or_else(|| graph.add_definition(def))
-            } else {
-                continue;
-            };
-
-            graph.add_edge(caller_id, callee_id);
-        }
-
-        pb.finish_and_clear();
-        graph
-    }
-
-    pub fn build_precise(index: &Index, root: &Path, strict: bool, precise: bool) -> Self {
-        if precise {
-            Self::build_with_lsp(index, root)
-        } else {
-            Self::build_with_options(index, strict)
-        }
     }
 
     fn add_definition(&mut self, definition: Definition) -> NodeId {

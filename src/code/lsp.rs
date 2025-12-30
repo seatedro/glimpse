@@ -98,6 +98,7 @@ fn detect_zig_version(root: &Path) -> Option<String> {
     detect_zig_version_from_zon(root)
 }
 
+#[allow(clippy::literal_string_with_formatting_args)]
 fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let Some(ref url_template) = lsp.url_template else {
         bail!("no download URL configured for {}", lsp.binary);
@@ -388,6 +389,7 @@ struct LspClient {
     request_id: AtomicI32,
     root_uri: Uri,
     opened_files: HashMap<PathBuf, i32>,
+    is_ready: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -429,6 +431,7 @@ impl LspClient {
             request_id: AtomicI32::new(1),
             root_uri,
             opened_files: HashMap::new(),
+            is_ready: false,
         })
     }
 
@@ -582,7 +585,6 @@ impl LspClient {
         };
 
         let params = InitializeParams {
-            root_uri: Some(self.root_uri.clone()),
             capabilities,
             workspace_folders: Some(vec![WorkspaceFolder {
                 uri: self.root_uri.clone(),
@@ -706,13 +708,43 @@ impl Drop for LspClient {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct LspStats {
+#[derive(Debug, Default, Clone)]
+pub struct LspServerStats {
     pub resolved: usize,
     pub no_definition: usize,
     pub external: usize,
     pub not_indexed: usize,
     pub no_match: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct LspStats {
+    pub by_server: HashMap<String, LspServerStats>,
+}
+
+impl LspStats {
+    pub fn total_resolved(&self) -> usize {
+        self.by_server.values().map(|s| s.resolved).sum()
+    }
+}
+
+impl std::fmt::Display for LspStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut servers: Vec<_> = self.by_server.iter().collect();
+        servers.sort_by_key(|(name, _)| name.as_str());
+
+        let parts: Vec<String> = servers
+            .iter()
+            .map(|(name, stats)| {
+                format!(
+                    "{}: {} resolved, {} external, {} no-def",
+                    name, stats.resolved, stats.external, stats.no_definition
+                )
+            })
+            .collect();
+
+        write!(f, "{}", parts.join(" | "))
+    }
 }
 
 pub struct LspResolver {
@@ -752,14 +784,6 @@ impl LspResolver {
         self.progress = pb;
     }
 
-    fn find_sample_file(&self, ext: &str) -> Option<PathBuf> {
-        let pattern = format!("**/*.{}", ext);
-        glob::glob(&self.root.join(&pattern).to_string_lossy())
-            .ok()?
-            .filter_map(|p| p.ok())
-            .find(|p| !p.to_string_lossy().contains("/target/"))
-    }
-
     fn get_or_create_client(&mut self, ext: &str) -> Result<&mut LspClient> {
         let registry = Registry::global();
         let lang_entry = registry
@@ -780,19 +804,6 @@ impl LspResolver {
 
             let mut client = LspClient::new(lsp_config, &self.root)?;
             client.initialize()?;
-
-            let sample_file = self.find_sample_file(&ext);
-            if let Some(ref sample) = sample_file {
-                if let Ok(content) = std::fs::read_to_string(sample) {
-                    let lang_id = Self::language_id_for_ext(&ext);
-                    let _ = client.open_file(sample, &content, lang_id);
-                    let _ = client.wait_for_ready(sample, 60, self.progress.as_ref());
-                }
-            }
-
-            if let Some(ref pb) = self.progress {
-                pb.set_message(format!("{} ready", lsp_config.binary));
-            }
 
             self.clients.insert(key.clone(), client);
         }
@@ -829,8 +840,22 @@ impl LspResolver {
         }
     }
 
+    fn server_name_for_ext(&self, ext: &str) -> Option<String> {
+        let registry = Registry::global();
+        let lang_entry = registry.get_by_extension(ext)?;
+        lang_entry.lsp.as_ref().map(|l| l.binary.clone())
+    }
+
+    fn get_server_stats(&mut self, server: &str) -> &mut LspServerStats {
+        self.stats
+            .by_server
+            .entry(server.to_string())
+            .or_default()
+    }
+
     pub fn resolve_call_full(&mut self, call: &Call, index: &Index) -> Option<ResolvedCall> {
         let ext = call.file.extension().and_then(|e| e.to_str())?.to_string();
+        let server_name = self.server_name_for_ext(&ext)?;
         let abs_path = self.root.join(&call.file);
         let language_id = Self::language_id_for_ext(&ext);
         let callee = call.callee.clone();
@@ -848,6 +873,11 @@ impl LspResolver {
 
         let client = self.get_or_create_client(&ext).ok()?;
         client.open_file(&abs_path, &content, language_id).ok()?;
+
+        if !client.is_ready {
+            client.wait_for_ready(&abs_path, 60, None).ok()?;
+            client.is_ready = true;
+        }
 
         let signature = client
             .hover(&abs_path, start_line_idx as u32, col)
@@ -872,7 +902,7 @@ impl LspResolver {
         let location = match location {
             Some(loc) => loc,
             None => {
-                self.stats.no_definition += 1;
+                self.get_server_stats(&server_name).no_definition += 1;
                 return None;
             }
         };
@@ -883,7 +913,7 @@ impl LspResolver {
         let rel_path = match def_path.strip_prefix(&root) {
             Ok(p) => p.to_path_buf(),
             Err(_) => {
-                self.stats.external += 1;
+                self.get_server_stats(&server_name).external += 1;
                 return None;
             }
         };
@@ -894,7 +924,7 @@ impl LspResolver {
         let record = match index.get(&rel_path) {
             Some(r) => r,
             None => {
-                self.stats.not_indexed += 1;
+                self.get_server_stats(&server_name).not_indexed += 1;
                 return None;
             }
         };
@@ -906,12 +936,12 @@ impl LspResolver {
         {
             Some(d) => d,
             None => {
-                self.stats.no_match += 1;
+                self.get_server_stats(&server_name).no_match += 1;
                 return None;
             }
         };
 
-        self.stats.resolved += 1;
+        self.get_server_stats(&server_name).resolved += 1;
         Some(ResolvedCall {
             target_file: rel_path,
             target_name: def.name.clone(),
