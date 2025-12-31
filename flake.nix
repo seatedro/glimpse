@@ -51,6 +51,10 @@
               darwin.apple_sdk.frameworks.CoreServices
             ];
 
+          nativeCheckInputs = with pkgs; [
+            bun
+          ];
+
           preCheck = ''
             export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
           '';
