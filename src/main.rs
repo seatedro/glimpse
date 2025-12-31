@@ -20,7 +20,7 @@ use glimpse::code::graph::CallGraph;
 use glimpse::code::index::{
     clear_index, file_fingerprint, load_index, save_index, FileRecord, Index,
 };
-use glimpse::code::lsp::LspResolver;
+use glimpse::code::lsp::AsyncLspResolver;
 use glimpse::fetch::{GitProcessor, UrlProcessor};
 use glimpse::{
     get_config_path, is_source_file, load_config, load_repo_config, save_config, save_repo_config,
@@ -566,74 +566,104 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
     pb.set_message("resolving calls with LSP...");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
-    let mut resolved = 0;
-    let mut cache: HashMap<CacheKey, Option<ResolvedCall>> = HashMap::new();
-    let mut cache_hits = 0usize;
-    let mut cache_misses = 0usize;
+    let rt = tokio::runtime::Runtime::new()?;
+    let concurrency = 50;
 
-    let file_paths: Vec<_> = index.files.keys().cloned().collect();
+    let (resolved, stats, cache_hits, cache_misses) = rt.block_on(async {
+        let mut resolver = AsyncLspResolver::new(root);
+        let mut cache: HashMap<CacheKey, Option<ResolvedCall>> = HashMap::new();
+        let mut cache_hits = 0usize;
+        let mut cache_misses = 0usize;
+        let mut total_resolved = 0usize;
 
-    for file_path in file_paths {
-        let Some(record) = index.files.get(&file_path) else {
-            continue;
-        };
+        let file_paths: Vec<_> = index.files.keys().cloned().collect();
 
-        let calls_to_resolve: Vec<_> = record
-            .calls
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.resolved.is_none())
-            .map(|(i, c)| (i, c.clone()))
-            .collect();
+        for file_path in &file_paths {
+            let calls_to_resolve: Vec<_> = {
+                let Some(record) = index.files.get(file_path) else {
+                    continue;
+                };
+                record
+                    .calls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.resolved.is_none())
+                    .map(|(i, c)| (i, c.clone()))
+                    .collect()
+            };
 
-        if calls_to_resolve.is_empty() {
-            continue;
-        }
-
-        let mut resolutions = Vec::new();
-
-        for (call_idx, call) in &calls_to_resolve {
-            pb.inc(1);
-
-            let cache_key: CacheKey = (
-                call.callee.clone(),
-                call.qualifier.clone(),
-                call.file.clone(),
-            );
-
-            if let Some(cached_result) = cache.get(&cache_key) {
-                cache_hits += 1;
-                if let Some(resolved_call) = cached_result.clone() {
-                    resolutions.push((*call_idx, resolved_call));
-                }
+            if calls_to_resolve.is_empty() {
                 continue;
             }
 
-            cache_misses += 1;
-            let result = lsp_resolver.resolve_call_full(call, index);
-            cache.insert(cache_key, result.clone());
+            let call_count = calls_to_resolve.len();
+            let mut calls_for_lsp = Vec::new();
+            let mut cached_resolutions = Vec::new();
 
-            if let Some(resolved_call) = result {
-                resolutions.push((*call_idx, resolved_call));
-            }
-        }
+            for (call_idx, call) in &calls_to_resolve {
+                let cache_key: CacheKey = (
+                    call.callee.clone(),
+                    call.qualifier.clone(),
+                    call.file.clone(),
+                );
 
-        if let Some(record) = index.files.get_mut(&file_path) {
-            for (call_idx, resolved_call) in resolutions {
-                if call_idx < record.calls.len() {
-                    record.calls[call_idx].resolved = Some(resolved_call);
-                    resolved += 1;
+                if let Some(cached_result) = cache.get(&cache_key) {
+                    cache_hits += 1;
+                    if let Some(resolved_call) = cached_result.clone() {
+                        cached_resolutions.push((*call_idx, resolved_call));
+                    }
+                } else {
+                    cache_misses += 1;
+                    calls_for_lsp.push((*call_idx, call.clone(), cache_key));
                 }
             }
+
+            if !calls_for_lsp.is_empty() {
+                let call_refs: Vec<_> = calls_for_lsp.iter().map(|(_, c, _)| c).collect();
+                let results = resolver
+                    .resolve_calls_batch(&call_refs, index, concurrency)
+                    .await;
+
+                for (batch_idx, resolved_call) in results {
+                    let (call_idx, _, cache_key) = &calls_for_lsp[batch_idx];
+                    cache.insert(cache_key.clone(), Some(resolved_call.clone()));
+
+                    if let Some(record) = index.files.get_mut(file_path) {
+                        if *call_idx < record.calls.len() {
+                            record.calls[*call_idx].resolved = Some(resolved_call);
+                            total_resolved += 1;
+                        }
+                    }
+                }
+
+                for (_, _, cache_key) in &calls_for_lsp {
+                    if !cache.contains_key(cache_key) {
+                        cache.insert(cache_key.clone(), None);
+                    }
+                }
+            }
+
+            for (call_idx, resolved_call) in cached_resolutions {
+                if let Some(record) = index.files.get_mut(file_path) {
+                    if call_idx < record.calls.len() {
+                        record.calls[call_idx].resolved = Some(resolved_call);
+                        total_resolved += 1;
+                    }
+                }
+            }
+
+            pb.inc(call_count as u64);
         }
-    }
+
+        resolver.shutdown_all().await;
+        let stats = resolver.stats().clone();
+        (total_resolved, stats, cache_hits, cache_misses)
+    });
 
     pb.finish_and_clear();
 
-    let stats = lsp_resolver.stats();
     if stats.by_server.is_empty() {
-        debug!("LSP: no servers responded (check if LSP binaries are working)");
+        debug!("LSP: no servers responded");
     } else {
         debug!("LSP: {}", stats);
     }

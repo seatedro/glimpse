@@ -1,32 +1,40 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::Duration;
 
 use glimpse::code::extract::Extractor;
 use glimpse::code::index::{file_fingerprint, Call, FileRecord, Index};
-use glimpse::code::lsp::LspResolver;
+use glimpse::code::lsp::AsyncLspResolver;
 use tempfile::TempDir;
 use tree_sitter::Parser;
 
-fn index_file(index: &mut Index, extractor: &Extractor, path: &Path, source: &str) {
+fn index_file(
+    index: &mut Index,
+    extractor: &Extractor,
+    base: &Path,
+    path: &Path,
+    source: &str,
+) {
     let mut parser = Parser::new();
     parser.set_language(extractor.language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
 
     let rel_path = path
-        .file_name()
+        .strip_prefix(base)
         .map(PathBuf::from)
-        .unwrap_or(path.to_path_buf());
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .map(PathBuf::from)
+                .unwrap_or(path.to_path_buf())
+        });
     let (mtime, size) = file_fingerprint(path).unwrap_or((0, source.len() as u64));
 
     let record = FileRecord {
-        path: rel_path,
+        path: rel_path.clone(),
         mtime,
         size,
-        definitions: extractor.extract_definitions(&tree, source.as_bytes(), path),
-        calls: extractor.extract_calls(&tree, source.as_bytes(), path),
-        imports: extractor.extract_imports(&tree, source.as_bytes(), path),
+        definitions: extractor.extract_definitions(&tree, source.as_bytes(), &rel_path),
+        calls: extractor.extract_calls(&tree, source.as_bytes(), &rel_path),
+        imports: extractor.extract_imports(&tree, source.as_bytes(), &rel_path),
     };
 
     index.update(record);
@@ -42,19 +50,18 @@ fn lsp_available(binary: &str) -> bool {
     }
 }
 
-fn wait_for_lsp_ready(resolver: &mut LspResolver, calls: &[Call], index: &Index) {
-    for _ in 0..30 {
-        if let Some(call) = calls.first() {
-            if resolver.resolve_call(call, index).is_some() {
-                return;
-            }
-        }
-        thread::sleep(Duration::from_millis(500));
-    }
-}
-
 fn collect_calls(index: &Index) -> Vec<Call> {
     index.calls().cloned().collect()
+}
+
+async fn resolve_call(
+    resolver: &mut AsyncLspResolver,
+    call: &Call,
+    index: &Index,
+) -> Option<String> {
+    let calls: Vec<&Call> = vec![call];
+    let results = resolver.resolve_calls_batch(&calls, index, 1).await;
+    results.first().map(|(_, resolved)| resolved.target_name.clone())
 }
 
 mod rust_lsp {
@@ -64,9 +71,9 @@ mod rust_lsp {
         lsp_available("rust-analyzer")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_rust_same_file_definition() {
+    async fn test_rust_same_file_definition() {
         if !rust_analyzer_available() {
             eprintln!("Skipping: rust-analyzer not available");
             return;
@@ -139,28 +146,27 @@ edition = "2021"
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
             eprintln!(
                 "Resolving call: callee={}, file={:?}, line={}",
                 call.callee, call.file, call.span.start_line
             );
-            let def = resolver.resolve_call(call, &index);
-            if def.is_none() {
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            if def_name.is_none() {
                 eprintln!("Resolution failed! Check LSP logs.");
             }
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
-            assert_eq!(def.span.start_line, 5);
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_rust_cross_module_definition() {
+    async fn test_rust_cross_module_definition() {
         if !rust_analyzer_available() {
             eprintln!("Skipping: rust-analyzer not available");
             return;
@@ -194,22 +200,27 @@ edition = "2021"
 
         let mut index = Index::new();
         let extractor = Extractor::new("rust").unwrap();
-        index_file(&mut index, &extractor, &src.join("main.rs"), main_rs);
-        index_file(&mut index, &extractor, &src.join("utils.rs"), utils_rs);
+        index_file(&mut index, &extractor, dir.path(), &src.join("main.rs"), main_rs);
+        index_file(&mut index, &extractor, dir.path(), &src.join("utils.rs"), utils_rs);
 
         let calls = collect_calls(&index);
+        eprintln!("calls: {:?}", calls.iter().map(|c| &c.callee).collect::<Vec<_>>());
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
+        eprintln!("created resolver for {:?}", dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve utils::process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "process");
+            eprintln!("resolving call: {:?} at {:?}:{}", call.callee, call.file, call.span.start_line);
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            eprintln!("def_name: {:?}", def_name);
+            eprintln!("stats: {:?}", resolver.stats());
+            assert!(def_name.is_some(), "LSP should resolve process() call");
+            assert_eq!(def_name.unwrap(), "process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -220,9 +231,9 @@ mod go_lsp {
         lsp_available("gopls")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_go_same_file_definition() {
+    async fn test_go_same_file_definition() {
         if !gopls_available() {
             eprintln!("Skipping: gopls not available");
             return;
@@ -248,7 +259,7 @@ func helper() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("go").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.go"), main_go);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.go"), main_go);
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from Go code");
@@ -256,20 +267,20 @@ func helper() {
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_go_cross_package_definition() {
+    async fn test_go_cross_package_definition() {
         if !gopls_available() {
             eprintln!("Skipping: gopls not available");
             return;
@@ -303,27 +314,22 @@ func Process() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("go").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.go"), main_go);
-        index_file(
-            &mut index,
-            &extractor,
-            &utils_dir.join("utils.go"),
-            utils_go,
-        );
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.go"), main_go);
+        index_file(&mut index, &extractor, dir.path(), &utils_dir.join("utils.go"), utils_go);
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "Process");
         assert!(process_call.is_some(), "Should find call to Process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve utils.Process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "Process");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve utils.Process() call");
+            assert_eq!(def_name.unwrap(), "Process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -334,9 +340,9 @@ mod python_lsp {
         lsp_available("pyright-langserver") || lsp_available("pyright")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_python_same_file_definition() {
+    async fn test_python_same_file_definition() {
         if !pyright_available() {
             eprintln!("Skipping: pyright not available");
             return;
@@ -358,7 +364,7 @@ if __name__ == "__main__":
 
         let mut index = Index::new();
         let extractor = Extractor::new("python").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.py"), main_py);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.py"), main_py);
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from Python code");
@@ -366,20 +372,20 @@ if __name__ == "__main__":
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_python_cross_module_definition() {
+    async fn test_python_cross_module_definition() {
         if !pyright_available() {
             eprintln!("Skipping: pyright not available");
             return;
@@ -405,27 +411,22 @@ if __name__ == "__main__":
 
         let mut index = Index::new();
         let extractor = Extractor::new("python").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.py"), main_py);
-        index_file(
-            &mut index,
-            &extractor,
-            &dir.path().join("utils.py"),
-            utils_py,
-        );
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.py"), main_py);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.py"), utils_py);
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "process");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve process() call");
+            assert_eq!(def_name.unwrap(), "process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -436,9 +437,9 @@ mod typescript_lsp {
         lsp_available("typescript-language-server") || lsp_available("tsserver")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_typescript_same_file_definition() {
+    async fn test_typescript_same_file_definition() {
         if !tsserver_available() {
             eprintln!("Skipping: typescript-language-server not available");
             return;
@@ -471,7 +472,7 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("typescript").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.ts"), main_ts);
 
         let calls = collect_calls(&index);
         assert!(
@@ -482,20 +483,20 @@ main();
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_typescript_cross_module_definition() {
+    async fn test_typescript_cross_module_definition() {
         if !tsserver_available() {
             eprintln!("Skipping: typescript-language-server not available");
             return;
@@ -532,27 +533,22 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("typescript").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.ts"), main_ts);
-        index_file(
-            &mut index,
-            &extractor,
-            &dir.path().join("utils.ts"),
-            utils_ts,
-        );
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.ts"), main_ts);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.ts"), utils_ts);
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "process");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve process() call");
+            assert_eq!(def_name.unwrap(), "process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -563,9 +559,9 @@ mod javascript_lsp {
         lsp_available("typescript-language-server") || lsp_available("tsserver")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_javascript_same_file_definition() {
+    async fn test_javascript_same_file_definition() {
         if !tsserver_available() {
             eprintln!("Skipping: typescript-language-server not available");
             return;
@@ -597,7 +593,7 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("javascript").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.js"), main_js);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.js"), main_js);
 
         let calls = collect_calls(&index);
         assert!(
@@ -608,15 +604,15 @@ main();
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -627,9 +623,9 @@ mod c_lsp {
         lsp_available("clangd")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_c_same_file_definition() {
+    async fn test_c_same_file_definition() {
         if !clangd_available() {
             eprintln!("Skipping: clangd not available");
             return;
@@ -665,7 +661,7 @@ void helper(void) {
 
         let mut index = Index::new();
         let extractor = Extractor::new("c").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.c"), main_c);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.c"), main_c);
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from C code");
@@ -673,20 +669,20 @@ void helper(void) {
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_c_cross_file_definition() {
+    async fn test_c_cross_file_definition() {
         if !clangd_available() {
             eprintln!("Skipping: clangd not available");
             return;
@@ -739,22 +735,22 @@ void process(void) {
 
         let mut index = Index::new();
         let extractor = Extractor::new("c").unwrap();
-        index_file(&mut index, &extractor, &dir.path().join("main.c"), main_c);
-        index_file(&mut index, &extractor, &dir.path().join("utils.c"), utils_c);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.c"), main_c);
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.c"), utils_c);
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "process");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve process() call");
+            assert_eq!(def_name.unwrap(), "process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 
@@ -765,9 +761,9 @@ mod cpp_lsp {
         lsp_available("clangd")
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_cpp_same_file_definition() {
+    async fn test_cpp_same_file_definition() {
         if !clangd_available() {
             eprintln!("Skipping: clangd not available");
             return;
@@ -803,12 +799,7 @@ void helper() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(
-            &mut index,
-            &extractor,
-            &dir.path().join("main.cpp"),
-            main_cpp,
-        );
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.cpp"), main_cpp);
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from C++ code");
@@ -816,20 +807,20 @@ void helper() {
         let helper_call = calls.iter().find(|c| c.callee == "helper");
         assert!(helper_call.is_some(), "Should find call to helper()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = helper_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve helper() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "helper");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve helper() call");
+            assert_eq!(def_name.unwrap(), "helper");
         }
+
+        resolver.shutdown_all().await;
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn test_cpp_method_definition() {
+    async fn test_cpp_method_definition() {
         if !clangd_available() {
             eprintln!("Skipping: clangd not available");
             return;
@@ -869,26 +860,21 @@ int main() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(
-            &mut index,
-            &extractor,
-            &dir.path().join("main.cpp"),
-            main_cpp,
-        );
+        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.cpp"), main_cpp);
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
-        let mut resolver = LspResolver::new(dir.path());
-        wait_for_lsp_ready(&mut resolver, &calls, &index);
+        let mut resolver = AsyncLspResolver::new(dir.path());
 
         if let Some(call) = process_call {
-            let def = resolver.resolve_call(call, &index);
-            assert!(def.is_some(), "LSP should resolve p.process() call");
-            let def = def.unwrap();
-            assert_eq!(def.name, "process");
+            let def_name = resolve_call(&mut resolver, call, &index).await;
+            assert!(def_name.is_some(), "LSP should resolve p.process() call");
+            assert_eq!(def_name.unwrap(), "process");
         }
+
+        resolver.shutdown_all().await;
     }
 }
 

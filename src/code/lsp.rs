@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{bail, Context, Result};
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use tracing::{debug, trace, warn};
 
 use super::grammar::{lsp_dir, LspConfig, Registry};
-use super::index::{Call, Definition, Index, ResolvedCall};
+use super::index::{Call, Index, ResolvedCall};
 
 fn current_target() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -75,6 +75,15 @@ fn path_to_uri(path: &Path) -> Result<Uri> {
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     let url = url::Url::parse(uri.as_str()).ok()?;
     url.to_file_path().ok()
+}
+
+fn is_declaration_file_uri(uri: &str) -> bool {
+    let path = uri.rsplit('/').next().unwrap_or(uri);
+    if path.ends_with(".d.ts") || path.ends_with(".d.mts") || path.ends_with(".d.cts") {
+        return true;
+    }
+    let ext = path.rsplit('.').next().unwrap_or("");
+    matches!(ext, "h" | "hpp" | "hxx" | "hh")
 }
 
 fn detect_zig_version_from_zon(root: &Path) -> Option<String> {
@@ -411,17 +420,6 @@ fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     );
 }
 
-#[derive(Debug)]
-struct LspClient {
-    process: Child,
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-    request_id: AtomicI32,
-    root_uri: Uri,
-    opened_files: HashMap<PathBuf, i32>,
-    is_ready: bool,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct LspMessage {
     jsonrpc: String,
@@ -437,305 +435,6 @@ struct LspMessage {
     error: Option<Value>,
 }
 
-impl LspClient {
-    fn new(lsp: &LspConfig, root: &Path) -> Result<Self> {
-        let binary_path = find_lsp_binary(lsp, root)?;
-
-        let mut process = Command::new(&binary_path)
-            .args(&lsp.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("failed to spawn {}", binary_path.display()))?;
-
-        let stdin = process.stdin.take().context("failed to get stdin")?;
-        let stdout = process.stdout.take().context("failed to get stdout")?;
-
-        let root_uri = path_to_uri(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))?;
-
-        Ok(Self {
-            process,
-            stdin: BufWriter::new(stdin),
-            stdout: BufReader::new(stdout),
-            request_id: AtomicI32::new(1),
-            root_uri,
-            opened_files: HashMap::new(),
-            is_ready: false,
-        })
-    }
-
-    fn next_id(&self) -> i32 {
-        self.request_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    fn send_message(&mut self, msg: &LspMessage) -> Result<()> {
-        let content = serde_json::to_string(msg)?;
-        let header = format!("Content-Length: {}\r\n\r\n", content.len());
-
-        self.stdin.write_all(header.as_bytes())?;
-        self.stdin.write_all(content.as_bytes())?;
-        self.stdin.flush()?;
-
-        Ok(())
-    }
-
-    fn read_message(&mut self) -> Result<LspMessage> {
-        let mut content_length: Option<usize> = None;
-        let mut header_line = String::new();
-
-        loop {
-            header_line.clear();
-            self.stdout.read_line(&mut header_line)?;
-
-            if header_line == "\r\n" || header_line.is_empty() {
-                break;
-            }
-
-            if let Some(len_str) = header_line.strip_prefix("Content-Length: ") {
-                content_length = Some(len_str.trim().parse()?);
-            }
-        }
-
-        let len = content_length.context("missing Content-Length header")?;
-        let mut body = vec![0u8; len];
-        self.stdout.read_exact(&mut body)?;
-
-        let msg: LspMessage = serde_json::from_slice(&body)?;
-        Ok(msg)
-    }
-
-    fn send_request(&mut self, method: &str, params: Value) -> Result<Value> {
-        let id = self.next_id();
-        let msg = LspMessage {
-            jsonrpc: "2.0".to_string(),
-            id: Some(id),
-            method: Some(method.to_string()),
-            params: Some(params),
-            result: None,
-            error: None,
-        };
-
-        self.send_message(&msg)?;
-
-        loop {
-            let response = self.read_message()?;
-
-            if response.id == Some(id) {
-                if let Some(error) = response.error {
-                    bail!("LSP error: {}", error);
-                }
-                return Ok(response.result.unwrap_or(Value::Null));
-            }
-        }
-    }
-
-    fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
-        let msg = LspMessage {
-            jsonrpc: "2.0".to_string(),
-            id: None,
-            method: Some(method.to_string()),
-            params: Some(params),
-            result: None,
-            error: None,
-        };
-
-        self.send_message(&msg)
-    }
-
-    fn wait_for_ready(
-        &mut self,
-        path: &Path,
-        max_attempts: u32,
-        pb: Option<&ProgressBar>,
-        server_name: Option<&str>,
-    ) -> Result<bool> {
-        use std::thread;
-        use std::time::Duration;
-
-        let uri = path_to_uri(path)?;
-        let name = server_name.unwrap_or("LSP");
-
-        debug!(server = %name, "waiting for LSP to be ready");
-
-        if let Some(pb) = pb {
-            pb.set_message(format!("{}: waiting for indexing...", name));
-        }
-
-        for i in 0..10 {
-            let params = lsp_types::DocumentSymbolParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
-            };
-
-            match self.send_request("textDocument/documentSymbol", serde_json::to_value(params)?) {
-                Ok(Value::Array(arr)) if !arr.is_empty() => {
-                    trace!(server = %name, attempt = i, "syntax analysis ready");
-                    break;
-                }
-                _ => thread::sleep(Duration::from_millis(200)),
-            }
-        }
-
-        if let Some(pb) = pb {
-            pb.set_message(format!("{}: ready", name));
-        }
-
-        for attempt in 0..max_attempts {
-            let hover_params = json!({
-                "textDocument": { "uri": uri.as_str() },
-                "position": { "line": 0, "character": 4 }
-            });
-
-            match self.send_request("textDocument/hover", hover_params) {
-                Ok(result) if !result.is_null() => {
-                    debug!(server = %name, attempts = attempt + 1, "LSP ready");
-                    return Ok(true);
-                }
-                _ => {}
-            }
-
-            if attempt < max_attempts - 1 {
-                thread::sleep(Duration::from_millis(500));
-            }
-        }
-
-        warn!(server = %name, "LSP did not become ready after {} attempts", max_attempts);
-        Ok(false)
-    }
-
-    fn initialize(&mut self) -> Result<()> {
-        let text_document_caps = lsp_types::TextDocumentClientCapabilities {
-            definition: Some(lsp_types::GotoCapability {
-                dynamic_registration: Some(false),
-                link_support: Some(true),
-            }),
-            synchronization: Some(lsp_types::TextDocumentSyncClientCapabilities {
-                dynamic_registration: Some(false),
-                will_save: Some(false),
-                will_save_wait_until: Some(false),
-                did_save: Some(false),
-            }),
-            ..Default::default()
-        };
-
-        let capabilities = ClientCapabilities {
-            text_document: Some(text_document_caps),
-            ..Default::default()
-        };
-
-        let params = InitializeParams {
-            capabilities,
-            workspace_folders: Some(vec![WorkspaceFolder {
-                uri: self.root_uri.clone(),
-                name: "root".to_string(),
-            }]),
-            ..Default::default()
-        };
-
-        self.send_request("initialize", serde_json::to_value(params)?)?;
-        self.send_notification("initialized", serde_json::to_value(InitializedParams {})?)?;
-
-        Ok(())
-    }
-
-    fn open_file(&mut self, path: &Path, content: &str, language_id: &str) -> Result<()> {
-        if self.opened_files.contains_key(path) {
-            return Ok(());
-        }
-
-        let uri = path_to_uri(path)?;
-
-        let version = 1;
-        self.opened_files.insert(path.to_path_buf(), version);
-
-        let params = DidOpenTextDocumentParams {
-            text_document: lsp_types::TextDocumentItem {
-                uri,
-                language_id: language_id.to_string(),
-                version,
-                text: content.to_string(),
-            },
-        };
-
-        self.send_notification("textDocument/didOpen", serde_json::to_value(params)?)
-    }
-
-    fn goto_definition(
-        &mut self,
-        path: &Path,
-        line: u32,
-        character: u32,
-    ) -> Result<Option<lsp_types::Location>> {
-        let uri = path_to_uri(path)?;
-
-        let params = GotoDefinitionParams {
-            text_document_position_params: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position { line, character },
-            },
-            work_done_progress_params: Default::default(),
-            partial_result_params: Default::default(),
-        };
-
-        let result = self.send_request("textDocument/definition", serde_json::to_value(params)?)?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        let response: GotoDefinitionResponse = serde_json::from_value(result)?;
-
-        match response {
-            GotoDefinitionResponse::Scalar(loc) => Ok(Some(loc)),
-            GotoDefinitionResponse::Array(locs) => Ok(locs.into_iter().next()),
-            GotoDefinitionResponse::Link(links) => {
-                Ok(links.into_iter().next().map(|l| lsp_types::Location {
-                    uri: l.target_uri,
-                    range: l.target_selection_range,
-                }))
-            }
-        }
-    }
-
-    fn hover(&mut self, path: &Path, line: u32, character: u32) -> Result<Option<String>> {
-        let uri = path_to_uri(path)?;
-
-        let params = json!({
-            "textDocument": { "uri": uri.as_str() },
-            "position": { "line": line, "character": character }
-        });
-
-        let result = self.send_request("textDocument/hover", params)?;
-
-        if result.is_null() {
-            return Ok(None);
-        }
-
-        let hover: lsp_types::Hover = serde_json::from_value(result)?;
-
-        let content = match hover.contents {
-            lsp_types::HoverContents::Scalar(marked) => extract_marked_string(&marked),
-            lsp_types::HoverContents::Array(arr) => arr
-                .into_iter()
-                .map(|m| extract_marked_string(&m))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            lsp_types::HoverContents::Markup(markup) => markup.value,
-        };
-
-        Ok(Some(content))
-    }
-
-    fn shutdown(&mut self) -> Result<()> {
-        self.send_request("shutdown", json!(null))?;
-        self.send_notification("exit", json!(null))?;
-        let _ = self.process.wait();
-        Ok(())
-    }
-}
-
 fn extract_marked_string(marked: &lsp_types::MarkedString) -> String {
     match marked {
         lsp_types::MarkedString::String(s) => s.clone(),
@@ -743,9 +442,20 @@ fn extract_marked_string(marked: &lsp_types::MarkedString) -> String {
     }
 }
 
-impl Drop for LspClient {
-    fn drop(&mut self) {
-        let _ = self.shutdown();
+pub fn language_id_for_ext(ext: &str) -> &'static str {
+    match ext {
+        "rs" => "rust",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "py" | "pyi" => "python",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
+        "java" => "java",
+        "zig" => "zig",
+        "sh" | "bash" => "shellscript",
+        "scala" | "sc" => "scala",
+        _ => "text",
     }
 }
 
@@ -758,7 +468,7 @@ pub struct LspServerStats {
     pub no_match: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LspStats {
     pub by_server: HashMap<String, LspServerStats>,
 }
@@ -799,274 +509,7 @@ impl std::fmt::Display for LspStats {
     }
 }
 
-pub struct LspResolver {
-    clients: HashMap<String, LspClient>,
-    failed_servers: HashSet<String>,
-    root: PathBuf,
-    file_cache: HashMap<PathBuf, String>,
-    progress: Option<ProgressBar>,
-    stats: LspStats,
-}
 
-impl LspResolver {
-    pub fn new(root: &Path) -> Self {
-        Self {
-            clients: HashMap::new(),
-            failed_servers: HashSet::new(),
-            root: root.to_path_buf(),
-            file_cache: HashMap::new(),
-            progress: None,
-            stats: LspStats::default(),
-        }
-    }
-
-    pub fn with_progress(root: &Path, pb: ProgressBar) -> Self {
-        Self {
-            clients: HashMap::new(),
-            failed_servers: HashSet::new(),
-            root: root.to_path_buf(),
-            file_cache: HashMap::new(),
-            progress: Some(pb),
-            stats: LspStats::default(),
-        }
-    }
-
-    pub fn stats(&self) -> &LspStats {
-        &self.stats
-    }
-
-    pub fn set_progress(&mut self, pb: Option<ProgressBar>) {
-        self.progress = pb;
-    }
-
-    fn get_or_create_client(&mut self, ext: &str) -> Result<&mut LspClient> {
-        let registry = Registry::global();
-        let lang_entry = registry
-            .get_by_extension(ext)
-            .with_context(|| format!("no language for extension: {}", ext))?;
-
-        let lsp_config = lang_entry
-            .lsp
-            .as_ref()
-            .with_context(|| format!("no LSP config for language: {}", lang_entry.name))?;
-
-        let key = lsp_config.binary.clone();
-
-        if self.failed_servers.contains(&key) {
-            bail!("{} previously failed to initialize", key);
-        }
-
-        if !self.clients.contains_key(&key) {
-            if let Some(ref pb) = self.progress {
-                pb.set_message(format!("starting {}...", lsp_config.binary));
-            }
-
-            let client = match LspClient::new(lsp_config, &self.root) {
-                Ok(mut c) => {
-                    if let Err(e) = c.initialize() {
-                        self.failed_servers.insert(key.clone());
-                        warn!(server = %lsp_config.binary, error = ?e, "LSP initialization failed");
-                        return Err(e);
-                    }
-                    c
-                }
-                Err(e) => {
-                    self.failed_servers.insert(key.clone());
-                    warn!(server = %lsp_config.binary, error = ?e, "LSP server failed to start");
-                    return Err(e);
-                }
-            };
-
-            self.clients.insert(key.clone(), client);
-        }
-
-        Ok(self.clients.get_mut(&key).unwrap())
-    }
-
-    fn read_file(&mut self, path: &Path) -> Result<String> {
-        if let Some(content) = self.file_cache.get(path) {
-            return Ok(content.clone());
-        }
-
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-
-        self.file_cache.insert(path.to_path_buf(), content.clone());
-        Ok(content)
-    }
-
-    fn language_id_for_ext(ext: &str) -> &'static str {
-        match ext {
-            "rs" => "rust",
-            "ts" | "tsx" | "mts" | "cts" => "typescript",
-            "js" | "jsx" | "mjs" | "cjs" => "javascript",
-            "py" | "pyi" => "python",
-            "go" => "go",
-            "c" | "h" => "c",
-            "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
-            "java" => "java",
-            "zig" => "zig",
-            "sh" | "bash" => "shellscript",
-            "scala" | "sc" => "scala",
-            _ => "text",
-        }
-    }
-
-    fn server_name_for_ext(&self, ext: &str) -> Option<String> {
-        let registry = Registry::global();
-        let lang_entry = registry.get_by_extension(ext)?;
-        lang_entry.lsp.as_ref().map(|l| l.binary.clone())
-    }
-
-    fn get_server_stats(&mut self, server: &str) -> &mut LspServerStats {
-        self.stats.by_server.entry(server.to_string()).or_default()
-    }
-
-    pub fn resolve_call_full(&mut self, call: &Call, index: &Index) -> Option<ResolvedCall> {
-        let ext = call.file.extension().and_then(|e| e.to_str())?.to_string();
-        let server_name = self.server_name_for_ext(&ext)?;
-        let abs_path = self.root.join(&call.file);
-        let language_id = Self::language_id_for_ext(&ext);
-        let callee = call.callee.clone();
-        let start_line_idx = call.span.start_line.saturating_sub(1);
-
-        let content = self.read_file(&abs_path).ok()?;
-
-        let lines: Vec<&str> = content.lines().collect();
-        if start_line_idx >= lines.len() {
-            return None;
-        }
-
-        let line_content = lines[start_line_idx];
-        let col = line_content.find(&callee).unwrap_or(0) as u32;
-
-        let pb = self.progress.clone();
-        let client = self.get_or_create_client(&ext).ok()?;
-        client.open_file(&abs_path, &content, language_id).ok()?;
-
-        if !client.is_ready {
-            let ready = client
-                .wait_for_ready(&abs_path, 60, pb.as_ref(), Some(&server_name))
-                .unwrap_or(false);
-            client.is_ready = true;
-            if let Some(ref pb) = pb {
-                if ready {
-                    pb.set_message("resolving...");
-                } else {
-                    pb.set_message(format!("{}: indexing (may be slow)", server_name));
-                }
-            }
-        }
-
-        let signature = client
-            .hover(&abs_path, start_line_idx as u32, col)
-            .ok()
-            .flatten()
-            .and_then(|h| extract_signature(&h));
-
-        let receiver_type = call.qualifier.as_ref().and_then(|_| {
-            let qualifier_col = line_content.find(call.qualifier.as_deref()?)?;
-            client
-                .hover(&abs_path, start_line_idx as u32, qualifier_col as u32)
-                .ok()
-                .flatten()
-                .and_then(|h| extract_type(&h))
-        });
-
-        let location = client
-            .goto_definition(&abs_path, start_line_idx as u32, col)
-            .ok()
-            .flatten();
-
-        let location = match location {
-            Some(loc) => loc,
-            None => {
-                trace!(callee = %callee, file = %call.file.display(), "no definition found");
-                self.get_server_stats(&server_name).no_definition += 1;
-                return None;
-            }
-        };
-
-        let def_path = uri_to_path(&location.uri)?;
-
-        let root = self.root.clone();
-        let rel_path = match def_path.strip_prefix(&root) {
-            Ok(p) => p.to_path_buf(),
-            Err(_) => {
-                trace!(callee = %callee, path = %def_path.display(), "definition is external");
-                self.get_server_stats(&server_name).external += 1;
-                return None;
-            }
-        };
-
-        let start_line = location.range.start.line as usize + 1;
-        let end_line = location.range.end.line as usize + 1;
-
-        let record = match index.get(&rel_path) {
-            Some(r) => r,
-            None => {
-                self.get_server_stats(&server_name).not_indexed += 1;
-                return None;
-            }
-        };
-
-        let def = match record
-            .definitions
-            .iter()
-            .find(|d| d.span.start_line <= start_line && d.span.end_line >= end_line)
-        {
-            Some(d) => d,
-            None => {
-                self.get_server_stats(&server_name).no_match += 1;
-                return None;
-            }
-        };
-
-        self.get_server_stats(&server_name).resolved += 1;
-        Some(ResolvedCall {
-            target_file: rel_path,
-            target_name: def.name.clone(),
-            target_span: def.span.clone(),
-            signature,
-            receiver_type,
-        })
-    }
-
-    pub fn resolve_call(&mut self, call: &Call, index: &Index) -> Option<Definition> {
-        if let Some(ref resolved) = call.resolved {
-            return index
-                .get(&resolved.target_file)?
-                .definitions
-                .iter()
-                .find(|d| d.name == resolved.target_name)
-                .cloned();
-        }
-
-        let resolved = self.resolve_call_full(call, index)?;
-        index
-            .get(&resolved.target_file)?
-            .definitions
-            .iter()
-            .find(|d| d.name == resolved.target_name)
-            .cloned()
-    }
-
-    pub fn resolve_calls_batch(
-        &mut self,
-        calls: &[&Call],
-        index: &Index,
-    ) -> HashMap<usize, Definition> {
-        let mut results = HashMap::new();
-
-        for (i, call) in calls.iter().enumerate() {
-            if let Some(def) = self.resolve_call(call, index) {
-                results.insert(i, def);
-            }
-        }
-
-        results
-    }
-}
 
 fn extract_signature(hover_content: &str) -> Option<String> {
     let lines: Vec<&str> = hover_content.lines().collect();
@@ -1190,6 +633,794 @@ pub fn ensure_lsp_for_extension(ext: &str, root: &Path) -> Result<PathBuf> {
     find_lsp_binary(lsp_config, root)
 }
 
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+use tokio::process::{Child as TokioChild, Command as TokioCommand};
+use tokio::sync::{oneshot, Mutex};
+
+#[derive(Debug)]
+struct AsyncLspClientInner {
+    writer: Mutex<tokio::process::ChildStdin>,
+    pending: Mutex<HashMap<i32, oneshot::Sender<Result<Value, String>>>>,
+    request_id: AtomicI32,
+    root_uri: Uri,
+    opened_files: Mutex<HashMap<PathBuf, i32>>,
+    is_ready: std::sync::atomic::AtomicBool,
+    _process: Mutex<TokioChild>,
+}
+
+#[derive(Debug, Clone)]
+struct AsyncLspClient {
+    inner: Arc<AsyncLspClientInner>,
+    _shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl AsyncLspClient {
+    async fn new(lsp: &LspConfig, root: &Path) -> Result<Self> {
+        let binary_path = find_lsp_binary(lsp, root)?;
+
+        let mut process = TokioCommand::new(&binary_path)
+            .args(&lsp.args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("failed to spawn {}", binary_path.display()))?;
+
+        let stdin = process.stdin.take().context("failed to get stdin")?;
+        let stdout = process.stdout.take().context("failed to get stdout")?;
+
+        let root_uri = path_to_uri(&root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))?;
+
+        let inner = Arc::new(AsyncLspClientInner {
+            writer: Mutex::new(stdin),
+            pending: Mutex::new(HashMap::new()),
+            request_id: AtomicI32::new(1),
+            root_uri,
+            opened_files: Mutex::new(HashMap::new()),
+            is_ready: std::sync::atomic::AtomicBool::new(false),
+            _process: Mutex::new(process),
+        });
+
+        let pending_clone = Arc::clone(&inner);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            Self::response_reader_task(stdout, pending_clone, shutdown_rx).await;
+        });
+
+        Ok(Self {
+            inner,
+            _shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
+        })
+    }
+
+    async fn response_reader_task(
+        stdout: tokio::process::ChildStdout,
+        inner: Arc<AsyncLspClientInner>,
+        mut shutdown_rx: oneshot::Receiver<()>,
+    ) {
+        let mut reader = TokioBufReader::new(stdout);
+        let mut header_buf = String::new();
+
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => {
+                    trace!("async LSP reader shutting down");
+                    break;
+                }
+                result = Self::read_one_message(&mut reader, &mut header_buf) => {
+                    match result {
+                        Ok(Some(msg)) => {
+                            if let Some(id) = msg.id {
+                                let mut pending_guard = inner.pending.lock().await;
+                                if let Some(tx) = pending_guard.remove(&id) {
+                                    let result = if let Some(error) = msg.error {
+                                        Err(format!("LSP error: {}", error))
+                                    } else {
+                                        Ok(msg.result.unwrap_or(Value::Null))
+                                    };
+                                    let _ = tx.send(result);
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            warn!(error = ?e, "error reading LSP message");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn read_one_message(
+        reader: &mut TokioBufReader<tokio::process::ChildStdout>,
+        header_buf: &mut String,
+    ) -> Result<Option<LspMessage>> {
+        let mut content_length: Option<usize> = None;
+
+        loop {
+            header_buf.clear();
+            let bytes_read = reader.read_line(header_buf).await?;
+            if bytes_read == 0 {
+                return Ok(None);
+            }
+
+            if header_buf == "\r\n" || header_buf.is_empty() {
+                break;
+            }
+
+            if let Some(len_str) = header_buf.strip_prefix("Content-Length: ") {
+                content_length = Some(len_str.trim().parse()?);
+            }
+        }
+
+        let len = content_length.context("missing Content-Length header")?;
+        let mut body = vec![0u8; len];
+        reader.read_exact(&mut body).await?;
+
+        let msg: LspMessage = serde_json::from_slice(&body)?;
+        Ok(Some(msg))
+    }
+
+    fn next_id(&self) -> i32 {
+        self.inner.request_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    async fn send_message(&self, msg: &LspMessage) -> Result<()> {
+        let content = serde_json::to_string(msg)?;
+        let header = format!("Content-Length: {}\r\n\r\n", content.len());
+
+        let mut writer = self.inner.writer.lock().await;
+        writer.write_all(header.as_bytes()).await?;
+        writer.write_all(content.as_bytes()).await?;
+        writer.flush().await?;
+
+        Ok(())
+    }
+
+    async fn send_request(&self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id();
+        let (tx, rx) = oneshot::channel();
+
+        {
+            let mut pending = self.inner.pending.lock().await;
+            pending.insert(id, tx);
+        }
+
+        let msg = LspMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(id),
+            method: Some(method.to_string()),
+            params: Some(params),
+            result: None,
+            error: None,
+        };
+
+        self.send_message(&msg).await?;
+
+        match rx.await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(e)) => bail!("{}", e),
+            Err(_) => bail!("LSP response channel closed"),
+        }
+    }
+
+    async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
+        match tokio::time::timeout(timeout, self.send_request(method, params)).await {
+            Ok(result) => result,
+            Err(_) => bail!("LSP request timed out after {:?}", timeout),
+        }
+    }
+
+    async fn send_notification(&self, method: &str, params: Value) -> Result<()> {
+        let msg = LspMessage {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: Some(method.to_string()),
+            params: Some(params),
+            result: None,
+            error: None,
+        };
+
+        self.send_message(&msg).await
+    }
+
+    async fn initialize(&self) -> Result<()> {
+        let text_document_caps = lsp_types::TextDocumentClientCapabilities {
+            definition: Some(lsp_types::GotoCapability {
+                dynamic_registration: Some(false),
+                link_support: Some(true),
+            }),
+            synchronization: Some(lsp_types::TextDocumentSyncClientCapabilities {
+                dynamic_registration: Some(false),
+                will_save: Some(false),
+                will_save_wait_until: Some(false),
+                did_save: Some(false),
+            }),
+            ..Default::default()
+        };
+
+        let capabilities = ClientCapabilities {
+            text_document: Some(text_document_caps),
+            ..Default::default()
+        };
+
+        let params = InitializeParams {
+            capabilities,
+            workspace_folders: Some(vec![WorkspaceFolder {
+                uri: self.inner.root_uri.clone(),
+                name: "root".to_string(),
+            }]),
+            ..Default::default()
+        };
+
+        self.send_request("initialize", serde_json::to_value(params)?)
+            .await?;
+        self.send_notification("initialized", serde_json::to_value(InitializedParams {})?)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn open_file(&self, path: &Path, content: &str, language_id: &str) -> Result<()> {
+        {
+            let files = self.inner.opened_files.lock().await;
+            if files.contains_key(path) {
+                return Ok(());
+            }
+        }
+
+        let uri = path_to_uri(path)?;
+        let version = 1;
+
+        {
+            let mut files = self.inner.opened_files.lock().await;
+            files.insert(path.to_path_buf(), version);
+        }
+
+        let params = DidOpenTextDocumentParams {
+            text_document: lsp_types::TextDocumentItem {
+                uri,
+                language_id: language_id.to_string(),
+                version,
+                text: content.to_string(),
+            },
+        };
+
+        self.send_notification("textDocument/didOpen", serde_json::to_value(params)?)
+            .await
+    }
+
+    async fn goto_definition(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<lsp_types::Location>> {
+        let uri = path_to_uri(path)?;
+
+        let params = GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position { line, character },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let result = self
+            .send_request("textDocument/definition", serde_json::to_value(params)?)
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let response: GotoDefinitionResponse = serde_json::from_value(result)?;
+
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => Ok(Some(loc)),
+            GotoDefinitionResponse::Array(locs) => Ok(locs.into_iter().next()),
+            GotoDefinitionResponse::Link(links) => {
+                Ok(links.into_iter().next().map(|l| lsp_types::Location {
+                    uri: l.target_uri,
+                    range: l.target_selection_range,
+                }))
+            }
+        }
+    }
+
+    async fn goto_implementation(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Result<Option<lsp_types::Location>> {
+        let uri = path_to_uri(path)?;
+
+        let params = json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": line, "character": character }
+        });
+
+        let result = self
+            .send_request("textDocument/implementation", params)
+            .await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let response: GotoDefinitionResponse = serde_json::from_value(result)?;
+
+        match response {
+            GotoDefinitionResponse::Scalar(loc) => Ok(Some(loc)),
+            GotoDefinitionResponse::Array(locs) => Ok(locs.into_iter().next()),
+            GotoDefinitionResponse::Link(links) => {
+                Ok(links.into_iter().next().map(|l| lsp_types::Location {
+                    uri: l.target_uri,
+                    range: l.target_selection_range,
+                }))
+            }
+        }
+    }
+
+    async fn hover(&self, path: &Path, line: u32, character: u32) -> Result<Option<String>> {
+        let uri = path_to_uri(path)?;
+
+        let params = json!({
+            "textDocument": { "uri": uri.as_str() },
+            "position": { "line": line, "character": character }
+        });
+
+        let result = self.send_request("textDocument/hover", params).await?;
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        let hover: lsp_types::Hover = serde_json::from_value(result)?;
+
+        let content = match hover.contents {
+            lsp_types::HoverContents::Scalar(marked) => extract_marked_string(&marked),
+            lsp_types::HoverContents::Array(arr) => arr
+                .into_iter()
+                .map(|m| extract_marked_string(&m))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            lsp_types::HoverContents::Markup(markup) => markup.value,
+        };
+
+        Ok(Some(content))
+    }
+
+    async fn wait_for_ready(&self, path: &Path, max_attempts: u32, server_name: &str) -> bool {
+        let uri = match path_to_uri(path) {
+            Ok(u) => u,
+            Err(_) => return false,
+        };
+
+        debug!(server = %server_name, "waiting for LSP to be ready");
+
+        for i in 0..10 {
+            let params = lsp_types::DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            };
+
+            let result = self
+                .send_request_with_timeout(
+                    "textDocument/documentSymbol",
+                    serde_json::to_value(params).unwrap_or_default(),
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+
+            match result {
+                Ok(Value::Array(arr)) if !arr.is_empty() => {
+                    trace!(server = %server_name, attempt = i, "syntax analysis ready");
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            }
+        }
+
+        for attempt in 0..max_attempts {
+            let hover_params = json!({
+                "textDocument": { "uri": uri.as_str() },
+                "position": { "line": 0, "character": 4 }
+            });
+
+            let result = self
+                .send_request_with_timeout(
+                    "textDocument/hover",
+                    hover_params,
+                    std::time::Duration::from_secs(5),
+                )
+                .await;
+
+            match result {
+                Ok(r) if !r.is_null() => {
+                    debug!(server = %server_name, attempts = attempt + 1, "LSP ready");
+                    return true;
+                }
+                _ => {}
+            }
+
+            if attempt < max_attempts - 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+
+        warn!(server = %server_name, "LSP did not become ready after {} attempts", max_attempts);
+        false
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        let _ = self.send_request("shutdown", json!(null)).await;
+        let _ = self.send_notification("exit", json!(null)).await;
+        Ok(())
+    }
+}
+
+fn is_ready(client: &AsyncLspClient) -> bool {
+    client.inner.is_ready.load(Ordering::SeqCst)
+}
+
+fn set_ready(client: &AsyncLspClient, ready: bool) {
+    client.inner.is_ready.store(ready, Ordering::SeqCst);
+}
+
+pub struct AsyncLspResolver {
+    clients: HashMap<String, AsyncLspClient>,
+    failed_servers: HashSet<String>,
+    root: PathBuf,
+    file_cache: HashMap<PathBuf, String>,
+    stats: LspStats,
+}
+
+impl AsyncLspResolver {
+    pub fn new(root: &Path) -> Self {
+        Self {
+            clients: HashMap::new(),
+            failed_servers: HashSet::new(),
+            root: root.to_path_buf(),
+            file_cache: HashMap::new(),
+            stats: LspStats::default(),
+        }
+    }
+
+    pub fn stats(&self) -> &LspStats {
+        &self.stats
+    }
+
+    fn read_file(&mut self, path: &Path) -> Result<String> {
+        if let Some(content) = self.file_cache.get(path) {
+            return Ok(content.clone());
+        }
+
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+
+        self.file_cache.insert(path.to_path_buf(), content.clone());
+        Ok(content)
+    }
+
+    fn language_id_for_ext(ext: &str) -> &'static str {
+        language_id_for_ext(ext)
+    }
+
+    fn server_name_for_ext(&self, ext: &str) -> Option<String> {
+        let registry = Registry::global();
+        let lang_entry = registry.get_by_extension(ext)?;
+        lang_entry.lsp.as_ref().map(|l| l.binary.clone())
+    }
+
+    fn get_server_stats(&mut self, server: &str) -> &mut LspServerStats {
+        self.stats.by_server.entry(server.to_string()).or_default()
+    }
+
+    async fn get_or_create_client(&mut self, ext: &str) -> Result<&AsyncLspClient> {
+        let registry = Registry::global();
+        let lang_entry = registry
+            .get_by_extension(ext)
+            .with_context(|| format!("no language for extension: {}", ext))?;
+
+        let lsp_config = lang_entry
+            .lsp
+            .as_ref()
+            .with_context(|| format!("no LSP config for language: {}", lang_entry.name))?;
+
+        let key = lsp_config.binary.clone();
+
+        if self.failed_servers.contains(&key) {
+            bail!("{} previously failed to initialize", key);
+        }
+
+        if !self.clients.contains_key(&key) {
+            let client = match AsyncLspClient::new(lsp_config, &self.root).await {
+                Ok(c) => {
+                    if let Err(e) = c.initialize().await {
+                        self.failed_servers.insert(key.clone());
+                        warn!(server = %lsp_config.binary, error = ?e, "LSP initialization failed");
+                        return Err(e);
+                    }
+                    c
+                }
+                Err(e) => {
+                    self.failed_servers.insert(key.clone());
+                    warn!(server = %lsp_config.binary, error = ?e, "LSP server failed to start");
+                    return Err(e);
+                }
+            };
+
+            self.clients.insert(key.clone(), client);
+        }
+
+        Ok(self.clients.get(&key).unwrap())
+    }
+
+    pub async fn resolve_calls_batch(
+        &mut self,
+        calls: &[&Call],
+        index: &Index,
+        concurrency: usize,
+    ) -> Vec<(usize, ResolvedCall)> {
+        let mut results = Vec::new();
+        let mut requests_by_server: HashMap<String, Vec<(usize, &Call, PathBuf, String)>> =
+            HashMap::new();
+
+        for (i, call) in calls.iter().enumerate() {
+            let ext = match call.file.extension().and_then(|e| e.to_str()) {
+                Some(e) => e.to_string(),
+                None => continue,
+            };
+
+            let server_name = match self.server_name_for_ext(&ext) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let abs_path = self.root.join(&call.file);
+            let content = match self.read_file(&abs_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            requests_by_server
+                .entry(server_name)
+                .or_default()
+                .push((i, *call, abs_path, content));
+        }
+
+        for (server_name, server_calls) in requests_by_server {
+            let ext = match server_calls.first() {
+                Some((_, call, _, _)) => call
+                    .file
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string(),
+                None => continue,
+            };
+
+            let client = match self.get_or_create_client(&ext).await {
+                Ok(c) => c.clone(),
+                Err(_) => continue,
+            };
+
+            let language_id = Self::language_id_for_ext(&ext);
+
+            for (_, _, abs_path, content) in &server_calls {
+                let _ = client.open_file(abs_path, content, language_id).await;
+            }
+
+            for def in index.definitions() {
+                if let Some(def_ext) = def.file.extension().and_then(|e| e.to_str()) {
+                    if Self::language_id_for_ext(def_ext) == language_id {
+                        let def_path = self.root.join(&def.file);
+                        if let Ok(content) = self.read_file(&def_path) {
+                            let _ = client.open_file(&def_path, &content, language_id).await;
+                        }
+                    }
+                }
+            }
+
+            if !is_ready(&client) {
+                if let Some((_, _, abs_path, _)) = server_calls.first() {
+                    let ready = client.wait_for_ready(abs_path, 60, &server_name).await;
+                    set_ready(&client, true);
+                    if !ready {
+                        debug!(server = %server_name, "LSP not ready, continuing anyway");
+                    }
+                }
+            }
+
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+            let mut handles = Vec::new();
+
+            for (call_idx, call, abs_path, content) in server_calls {
+                let lines: Vec<&str> = content.lines().collect();
+                let start_line_idx = call.span.start_line.saturating_sub(1);
+
+                if start_line_idx >= lines.len() {
+                    continue;
+                }
+
+                let line_content = lines[start_line_idx];
+                let col = line_content.find(&call.callee).unwrap_or(0) as u32;
+
+                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let client_clone = client.clone();
+                let abs_path_clone = abs_path.clone();
+                let callee = call.callee.clone();
+                let qualifier = call.qualifier.clone();
+                let line_content_owned = line_content.to_string();
+
+                let handle = tokio::spawn(async move {
+                    let _permit = permit;
+
+                    let signature = client_clone
+                        .hover(&abs_path_clone, start_line_idx as u32, col)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|h| extract_signature(&h));
+
+                    let receiver_type = if let Some(ref q) = qualifier {
+                        if let Some(qualifier_col) = line_content_owned.find(q.as_str()) {
+                            client_clone
+                                .hover(&abs_path_clone, start_line_idx as u32, qualifier_col as u32)
+                                .await
+                                .ok()
+                                .flatten()
+                                .and_then(|h| extract_type(&h))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let mut location = client_clone
+                        .goto_definition(&abs_path_clone, start_line_idx as u32, col)
+                        .await
+                        .ok()
+                        .flatten();
+
+                    if let Some(loc) = location.take() {
+                        let uri_str = loc.uri.as_str();
+                        let is_declaration_file = is_declaration_file_uri(uri_str);
+                        
+                        if is_declaration_file {
+                            if let Some(decl_path) = uri_to_path(&loc.uri) {
+                                if let Ok(decl_content) = std::fs::read_to_string(&decl_path) {
+                                    let ext = decl_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                    let lang_id = language_id_for_ext(ext);
+                                    let _ = client_clone.open_file(&decl_path, &decl_content, lang_id).await;
+                                    
+                                    let decl_line = loc.range.start.line;
+                                    let decl_char = loc.range.start.character;
+                                    
+                                    if let Ok(Some(impl_loc)) = client_clone
+                                        .goto_implementation(&decl_path, decl_line, decl_char)
+                                        .await
+                                    {
+                                        location = Some(impl_loc);
+                                    } else if let Ok(Some(def_loc)) = client_clone
+                                        .goto_definition(&decl_path, decl_line, decl_char)
+                                        .await
+                                    {
+                                        if !is_declaration_file_uri(def_loc.uri.as_str()) {
+                                            location = Some(def_loc);
+                                        } else {
+                                            location = Some(loc);
+                                        }
+                                    } else {
+                                        location = Some(loc);
+                                    }
+                                } else {
+                                    location = Some(loc);
+                                }
+                            } else {
+                                location = Some(loc);
+                            }
+                        } else {
+                            location = Some(loc);
+                        }
+                    }
+
+                    (call_idx, callee, location, signature, receiver_type)
+                });
+
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                if let Ok((call_idx, callee, location, signature, receiver_type)) = handle.await {
+                    let location = match location {
+                        Some(loc) => loc,
+                        None => {
+                            trace!(callee = %callee, "no definition found");
+                            self.get_server_stats(&server_name).no_definition += 1;
+                            continue;
+                        }
+                    };
+
+                    let def_path = match uri_to_path(&location.uri) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+
+                    let rel_path = match def_path.strip_prefix(&self.root) {
+                        Ok(p) => p.to_path_buf(),
+                        Err(_) => {
+                            trace!(callee = %callee, path = %def_path.display(), "definition is external");
+                            self.get_server_stats(&server_name).external += 1;
+                            continue;
+                        }
+                    };
+
+                    let start_line = location.range.start.line as usize + 1;
+                    let end_line = location.range.end.line as usize + 1;
+
+                    let record = match index.get(&rel_path) {
+                        Some(r) => r,
+                        None => {
+                            trace!(callee = %callee, path = %rel_path.display(), "definition file not indexed");
+                            self.get_server_stats(&server_name).not_indexed += 1;
+                            continue;
+                        }
+                    };
+
+                    let def =
+                        match record.definitions.iter().find(|d| {
+                            d.span.start_line <= start_line && d.span.end_line >= end_line
+                        }) {
+                            Some(d) => d,
+                            None => {
+                                self.get_server_stats(&server_name).no_match += 1;
+                                continue;
+                            }
+                        };
+
+                    self.get_server_stats(&server_name).resolved += 1;
+                    results.push((
+                        call_idx,
+                        ResolvedCall {
+                            target_file: rel_path,
+                            target_name: def.name.clone(),
+                            target_span: def.span.clone(),
+                            signature,
+                            receiver_type,
+                        },
+                    ));
+                }
+            }
+        }
+
+        results
+    }
+
+    pub async fn shutdown_all(&mut self) {
+        for (name, client) in self.clients.drain() {
+            if let Err(e) = client.shutdown().await {
+                debug!(server = %name, error = ?e, "error shutting down LSP");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,12 +1453,12 @@ mod tests {
 
     #[test]
     fn test_language_id_for_ext() {
-        assert_eq!(LspResolver::language_id_for_ext("rs"), "rust");
-        assert_eq!(LspResolver::language_id_for_ext("ts"), "typescript");
-        assert_eq!(LspResolver::language_id_for_ext("py"), "python");
-        assert_eq!(LspResolver::language_id_for_ext("go"), "go");
-        assert_eq!(LspResolver::language_id_for_ext("c"), "c");
-        assert_eq!(LspResolver::language_id_for_ext("cpp"), "cpp");
+        assert_eq!(language_id_for_ext("rs"), "rust");
+        assert_eq!(language_id_for_ext("ts"), "typescript");
+        assert_eq!(language_id_for_ext("py"), "python");
+        assert_eq!(language_id_for_ext("go"), "go");
+        assert_eq!(language_id_for_ext("c"), "c");
+        assert_eq!(language_id_for_ext("cpp"), "cpp");
     }
 
     #[test]
@@ -1237,51 +1468,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
-    use std::env;
-    use std::thread;
-    use std::time::Duration;
 
-    #[test]
-    #[ignore] // Run with: cargo test --release -- --ignored test_lsp_client_rust
-    fn test_lsp_client_rust() {
-        let root = env::current_dir().expect("failed to get current dir");
-        let registry = Registry::global();
-        let rust_entry = registry.get("rust").expect("rust not in registry");
-        let lsp_config = rust_entry.lsp.as_ref().expect("rust has no LSP config");
-
-        let mut client = LspClient::new(lsp_config, &root).expect("failed to create LSP client");
-        client.initialize().expect("failed to initialize LSP");
-
-        let test_file = root.join("src/main.rs");
-        let content = fs::read_to_string(&test_file).expect("failed to read test file");
-
-        client
-            .open_file(&test_file, &content, "rust")
-            .expect("failed to open file");
-
-        client
-            .wait_for_ready(&test_file, 30, None, None)
-            .expect("wait_for_ready failed");
-
-        // Line 61: ".filter(|path| is_url_or_git(path))"
-        let line = content.lines().nth(60).unwrap();
-        let col = line.find("is_url_or_git").unwrap_or(0);
-
-        // Retry a few times in case of "content modified" errors
-        for _ in 0..5 {
-            match client.goto_definition(&test_file, 60, col as u32) {
-                Ok(Some(loc)) => {
-                    let path = uri_to_path(&loc.uri).expect("invalid uri");
-                    assert!(path.ends_with("main.rs"));
-                    assert_eq!(loc.range.start.line, 25); // fn is_url_or_git definition
-                    return;
-                }
-                Ok(None) | Err(_) => thread::sleep(Duration::from_secs(2)),
-            }
-        }
-        panic!("Failed to resolve definition after all attempts");
-    }
-}
