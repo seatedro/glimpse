@@ -6,7 +6,6 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{bail, Context, Result};
-use tracing::{debug, trace, warn};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use lsp_types::{
@@ -16,6 +15,7 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::{debug, trace, warn};
 
 use super::grammar::{lsp_dir, LspConfig, Registry};
 use super::index::{Call, Definition, Index, ResolvedCall};
@@ -112,10 +112,7 @@ fn detect_zig_version(root: &Path) -> Option<String> {
                 "https://github.com/zigtools/zls/releases/download/{}/zls-x86_64-linux.tar.xz",
                 version
             );
-            if let Ok(resp) = reqwest::blocking::Client::new()
-                .head(&url)
-                .send()
-            {
+            if let Ok(resp) = reqwest::blocking::Client::new().head(&url).send() {
                 if resp.status().is_success() || resp.status().as_u16() == 302 {
                     debug!(zig_version = %zig_version, zls_version = %version, "found matching zls version");
                     return Some(version);
@@ -780,10 +777,20 @@ impl std::fmt::Display for LspStats {
         let parts: Vec<String> = servers
             .iter()
             .map(|(name, stats)| {
-                let total = stats.resolved + stats.external + stats.no_definition + stats.not_indexed + stats.no_match;
+                let total = stats.resolved
+                    + stats.external
+                    + stats.no_definition
+                    + stats.not_indexed
+                    + stats.no_match;
                 format!(
                     "{}: {}/{} resolved ({} external, {} no-def, {} not-indexed, {} no-match)",
-                    name, stats.resolved, total, stats.external, stats.no_definition, stats.not_indexed, stats.no_match
+                    name,
+                    stats.resolved,
+                    total,
+                    stats.external,
+                    stats.no_definition,
+                    stats.not_indexed,
+                    stats.no_match
                 )
             })
             .collect();
@@ -912,10 +919,7 @@ impl LspResolver {
     }
 
     fn get_server_stats(&mut self, server: &str) -> &mut LspServerStats {
-        self.stats
-            .by_server
-            .entry(server.to_string())
-            .or_default()
+        self.stats.by_server.entry(server.to_string()).or_default()
     }
 
     pub fn resolve_call_full(&mut self, call: &Call, index: &Index) -> Option<ResolvedCall> {
