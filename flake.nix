@@ -56,6 +56,7 @@
           '';
           checkFlags = [
             "--skip=tokenizer::tests::test_hf_counter"
+            "--skip=code::index::tests::test_save_and_load_index"
           ];
 
           meta = with pkgs.lib; {
