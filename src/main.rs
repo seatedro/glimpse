@@ -280,7 +280,7 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
     let target = FunctionTarget::parse(&args.target)?;
 
     let mut index = load_index(&root)?.unwrap_or_else(Index::new);
-    let needs_update = index_directory(&root, &mut index)?;
+    let needs_update = index_directory(&root, &mut index, args.hidden, args.no_ignore)?;
     let mut needs_save = needs_update > 0;
 
     // Only run LSP resolution if:
@@ -349,6 +349,8 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
             path,
             force,
             precise,
+            hidden,
+            no_ignore,
         } => {
             let root = path.canonicalize().unwrap_or_else(|_| path.clone());
 
@@ -358,7 +360,7 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
                 load_index(&root)?.unwrap_or_else(Index::new)
             };
 
-            let updated = index_directory(&root, &mut index)?;
+            let updated = index_directory(&root, &mut index, *hidden, *no_ignore)?;
 
             // Only run LSP resolution if files were updated or no calls resolved yet
             let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
@@ -421,7 +423,7 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
 
 const INDEX_CHUNK_SIZE: usize = 256;
 
-fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
+fn index_directory(root: &Path, index: &mut Index, hidden: bool, no_ignore: bool) -> Result<usize> {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -432,7 +434,9 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let source_files: Vec<_> = ignore::WalkBuilder::new(root)
-        .hidden(false)
+        .hidden(!hidden)
+        .git_ignore(!no_ignore)
+        .ignore(!no_ignore)
         .build()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))

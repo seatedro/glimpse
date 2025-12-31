@@ -88,6 +88,14 @@ pub struct CodeArgs {
     /// Precise mode: use LSP for type-aware resolution (slower but more accurate)
     #[arg(long)]
     pub precise: bool,
+
+    /// Include hidden files and directories
+    #[arg(short = 'H', long)]
+    pub hidden: bool,
+
+    /// Don't respect ignore files (.gitignore, .ignore, etc.)
+    #[arg(long)]
+    pub no_ignore: bool,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -111,6 +119,14 @@ pub enum IndexCommand {
         /// Use LSP for precise call resolution (slower but more accurate)
         #[arg(long)]
         precise: bool,
+
+        /// Include hidden files and directories
+        #[arg(short = 'H', long)]
+        hidden: bool,
+
+        /// Don't respect ignore files (.gitignore, .ignore, etc.)
+        #[arg(long)]
+        no_ignore: bool,
     },
 
     /// Clear the index for a project
