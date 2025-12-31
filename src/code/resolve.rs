@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::index::{Definition, Index};
 
@@ -124,35 +125,87 @@ fn import_matches_callee(module_path: &str, callee: &str, lang: &str) -> bool {
     }
 }
 
-fn file_matches_pattern(file_path: &Path, pattern: &str) -> bool {
-    let file_str = file_path.to_string_lossy();
+struct FilePatternIndex {
+    by_filename: HashMap<String, Vec<PathBuf>>,
+    by_suffix: HashMap<String, Vec<PathBuf>>,
+    by_def_name: HashMap<String, Definition>,
+}
 
-    if pattern.contains('/') {
-        file_str.ends_with(pattern) || file_str.contains(&format!("/{}", pattern))
-    } else {
-        file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n == pattern)
-            .unwrap_or(false)
+impl FilePatternIndex {
+    fn build(index: &Index) -> Self {
+        let mut by_filename: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut by_suffix: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let mut by_def_name: HashMap<String, Definition> = HashMap::new();
+
+        for path in index.files.keys() {
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                by_filename
+                    .entry(filename.to_string())
+                    .or_default()
+                    .push(path.clone());
+            }
+
+            let path_str = path.to_string_lossy();
+            let components: Vec<&str> = path_str.split('/').collect();
+            for i in 0..components.len() {
+                let suffix = components[i..].join("/");
+                by_suffix.entry(suffix).or_default().push(path.clone());
+            }
+        }
+
+        for def in index.definitions() {
+            by_def_name
+                .entry(def.name.clone())
+                .or_insert_with(|| def.clone());
+        }
+
+        Self {
+            by_filename,
+            by_suffix,
+            by_def_name,
+        }
+    }
+
+    fn files_matching(&self, pattern: &str) -> Vec<&PathBuf> {
+        if pattern.contains('/') {
+            self.by_suffix
+                .get(pattern)
+                .map(|v| v.iter().collect())
+                .unwrap_or_default()
+        } else {
+            self.by_filename
+                .get(pattern)
+                .map(|v| v.iter().collect())
+                .unwrap_or_default()
+        }
+    }
+
+    fn definition_by_name(&self, name: &str) -> Option<Definition> {
+        self.by_def_name.get(name).cloned()
     }
 }
 
 pub struct Resolver<'a> {
     index: &'a Index,
     strict: bool,
+    pattern_index: FilePatternIndex,
 }
 
 impl<'a> Resolver<'a> {
     pub fn new(index: &'a Index) -> Self {
         Self {
+            pattern_index: FilePatternIndex::build(index),
             index,
             strict: false,
         }
     }
 
     pub fn with_strict(index: &'a Index, strict: bool) -> Self {
-        Self { index, strict }
+        Self {
+            pattern_index: FilePatternIndex::build(index),
+            index,
+            strict,
+        }
     }
 
     /// Resolve a callee to its definition.
@@ -195,7 +248,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_by_index(&self, callee: &str) -> Option<Definition> {
-        self.index.definitions().find(|d| d.name == callee).cloned()
+        self.pattern_index.definition_by_name(callee)
     }
 
     fn resolve_via_imports(&self, callee: &str, from_file: &Path) -> Option<Definition> {
@@ -209,12 +262,10 @@ impl<'a> Resolver<'a> {
 
             let patterns = import_to_file_patterns(&import.module_path, ext);
 
-            for indexed_file in self.index.files.keys() {
-                for pattern in &patterns {
-                    if file_matches_pattern(indexed_file, pattern) {
-                        if let Some(def) = self.find_def_in_file(indexed_file, callee) {
-                            return Some(def);
-                        }
+            for pattern in &patterns {
+                for indexed_file in self.pattern_index.files_matching(pattern) {
+                    if let Some(def) = self.find_def_in_file(indexed_file, callee) {
+                        return Some(def);
                     }
                 }
             }
@@ -385,20 +436,41 @@ mod tests {
     }
 
     #[test]
-    fn test_file_matches_pattern() {
-        assert!(file_matches_pattern(
-            Path::new("src/utils/helper.rs"),
-            "utils/helper.rs"
-        ));
-        assert!(file_matches_pattern(
-            Path::new("src/utils/helper.rs"),
-            "helper.rs"
-        ));
-        assert!(file_matches_pattern(Path::new("helper.rs"), "helper.rs"));
-        assert!(!file_matches_pattern(
-            Path::new("src/other.rs"),
-            "helper.rs"
-        ));
+    fn test_file_pattern_index() {
+        let mut index = Index::new();
+        index.update(FileRecord {
+            path: PathBuf::from("src/utils/helper.rs"),
+            mtime: 0,
+            size: 0,
+            definitions: vec![],
+            calls: vec![],
+            imports: vec![],
+        });
+        index.update(FileRecord {
+            path: PathBuf::from("src/other.rs"),
+            mtime: 0,
+            size: 0,
+            definitions: vec![],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let pattern_index = FilePatternIndex::build(&index);
+
+        let matches = pattern_index.files_matching("utils/helper.rs");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], &PathBuf::from("src/utils/helper.rs"));
+
+        let matches = pattern_index.files_matching("helper.rs");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], &PathBuf::from("src/utils/helper.rs"));
+
+        let matches = pattern_index.files_matching("other.rs");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], &PathBuf::from("src/other.rs"));
+
+        let matches = pattern_index.files_matching("nonexistent.rs");
+        assert!(matches.is_empty());
     }
 
     #[test]

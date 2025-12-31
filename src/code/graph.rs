@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use super::index::{Definition, Index};
 use super::resolve::Resolver;
 
@@ -43,37 +45,37 @@ impl CallGraph {
             graph.add_definition(def.clone());
         }
 
-        for call in index.calls() {
-            let caller_id = call
-                .caller
-                .as_ref()
-                .and_then(|name| graph.find_node_by_file_and_name(&call.file, name));
+        let calls: Vec<_> = index.calls().collect();
 
-            let Some(caller_id) = caller_id else {
-                continue;
-            };
+        let resolved_edges: Vec<_> = calls
+            .par_iter()
+            .filter_map(|call| {
+                let caller_id = call
+                    .caller
+                    .as_ref()
+                    .and_then(|name| graph.find_node_by_file_and_name(&call.file, name))?;
 
-            let callee_def = if let Some(ref resolved) = call.resolved {
-                index
-                    .get(&resolved.target_file)
-                    .and_then(|r| {
-                        r.definitions
-                            .iter()
-                            .find(|d| d.name == resolved.target_name)
-                    })
-                    .cloned()
-            } else {
-                resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file)
-            };
+                let callee_def = if let Some(ref resolved) = call.resolved {
+                    index
+                        .get(&resolved.target_file)
+                        .and_then(|r| {
+                            r.definitions
+                                .iter()
+                                .find(|d| d.name == resolved.target_name)
+                        })
+                        .cloned()
+                } else {
+                    resolver.resolve(&call.callee, call.qualifier.as_deref(), &call.file)
+                }?;
 
-            let callee_id = if let Some(def) = callee_def {
-                graph
-                    .find_node_by_file_and_name(&def.file, &def.name)
-                    .unwrap_or_else(|| graph.add_definition(def))
-            } else {
-                continue;
-            };
+                Some((caller_id, callee_def))
+            })
+            .collect();
 
+        for (caller_id, callee_def) in resolved_edges {
+            let callee_id = graph
+                .find_node_by_file_and_name(&callee_def.file, &callee_def.name)
+                .unwrap_or_else(|| graph.add_definition(callee_def));
             graph.add_edge(caller_id, callee_id);
         }
 
