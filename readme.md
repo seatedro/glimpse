@@ -1,22 +1,24 @@
 # Glimpse
 
-A blazingly fast tool for peeking at codebases. Perfect for loading your codebase into an LLM's context, with built-in token counting support.
+A blazingly fast tool for peeking at codebases. Perfect for loading your codebase into an LLM's context, with built-in token counting and code analysis.
 
 ## Features
 
-- 🚀 Fast parallel file processing
-- 🌳 Tree-view of codebase structure
-- 📝 Source code content viewing
-- 🔢 Token counting with multiple backends
-- ⚙️ Configurable defaults
-- 📋 Clipboard support
-- 🎨 Customizable file type detection
-- 🥷 Respects .gitignore automatically
-- 📁 Local per-repo configuration with `.glimpse` file
-- 🔗 Web content processing with Markdown conversion
-- 📦 Git repository support
-- 🌐 URL traversal with configurable depth
-- 🏷️ XML output format for better LLM compatibility
+- Fast parallel file processing
+- Tree-view of codebase structure
+- Source code content viewing
+- Token counting with multiple backends (tiktoken, HuggingFace)
+- Call graph generation for code analysis
+- Configurable defaults with global and per-repo config
+- Clipboard support
+- Customizable file type detection
+- Respects .gitignore automatically
+- Web content processing with Markdown conversion
+- Git repository support (GitHub, GitLab, Bitbucket, Azure DevOps)
+- URL traversal with configurable depth
+- XML output format for better LLM compatibility
+- Interactive file picker
+- PDF export
 
 ## Installation
 
@@ -53,7 +55,8 @@ paru -S glimpse
 
 ## Usage
 
-Basic usage:
+### Basic Usage
+
 ```bash
 # Process a local directory
 glimpse /path/to/project
@@ -73,7 +76,8 @@ glimpse https://example.com/docs --traverse-links --link-depth 2
 
 On first use in a repository, Glimpse will save a `.glimpse` configuration file locally with your specified options. This file can be referenced on subsequent runs, or overridden by passing options again.
 
-Common options:
+### Common Options
+
 ```bash
 # Show hidden files
 glimpse -H /path/to/project
@@ -90,8 +94,11 @@ glimpse -f output.txt /path/to/project
 # Print output to stdout instead of copying to clipboard
 glimpse -p /path/to/project
 
-# Include specific file types
+# Include specific file types (additive to source files)
 glimpse -i "*.rs,*.go" /path/to/project
+
+# Only include specific patterns (replaces default source detection)
+glimpse --only-include "*.rs,*.go" /path/to/project
 
 # Exclude patterns or files
 glimpse -e "target/*,dist/*" /path/to/project
@@ -111,20 +118,80 @@ glimpse https://github.com/username/repo.git --pdf output.pdf
 # Open interactive file picker
 glimpse --interactive /path/to/project
 
+# Output in XML format for better LLM compatibility
+glimpse -x /path/to/project
+
 # Print the config file path and exit
 glimpse --config_path
 
 # Initialize a .glimpse config file in the current directory
 glimpse --config
-
-# Output in XML format for better LLM compatibility
-glimpse -x /path/to/project
 ```
 
-## CLI Options
+## Code Analysis
+
+Glimpse includes powerful code analysis features for understanding call relationships in your codebase.
+
+### Call Graph Generation
+
+Generate call graphs to see what functions a target function calls (callees) or what calls it (callers):
+
+```bash
+# Generate call graph for a function (searches all files)
+glimpse code :function_name
+
+# Specify file and function
+glimpse code src/main.rs:main
+
+# Include callers (reverse call graph)
+glimpse code src/main.rs:main --callers
+
+# Limit traversal depth
+glimpse code :process --depth 3
+
+# Output to file
+glimpse code :build -f callgraph.md
+
+# Strict mode: only resolve via imports (no global name matching)
+glimpse code :main --strict
+
+# Precise mode: use LSP for type-aware resolution (slower but accurate)
+glimpse code :main --precise
+
+# Specify project root
+glimpse code :main --root /path/to/project
+```
+
+### Code Index Management
+
+Glimpse maintains an index for faster code analysis. Manage it with:
+
+```bash
+# Build or update the index
+glimpse index build
+
+# Build with LSP for precise resolution
+glimpse index build --precise
+
+# Force rebuild (ignore existing index)
+glimpse index build --force
+
+# Clear the index
+glimpse index clear
+
+# Show index status and stats
+glimpse index status
+
+# Specify project path
+glimpse index build /path/to/project
+```
+
+## CLI Reference
 
 ```
 Usage: glimpse [OPTIONS] [PATH]
+       glimpse code [OPTIONS] <TARGET>
+       glimpse index <COMMAND>
 
 Arguments:
   [PATH]  Files, directories, or URLs to analyze [default: .]
@@ -134,6 +201,7 @@ Options:
       --config                     Init glimpse config file in current directory
       --interactive                Opens interactive file picker (? for help)
   -i, --include <PATTERNS>         Additional patterns to include (e.g. "*.rs,*.go")
+      --only-include <PATTERNS>    Only include these patterns (replaces source detection)
   -e, --exclude <PATTERNS|PATHS>   Additional patterns or files to exclude
   -s, --max-size <BYTES>           Maximum file size in bytes
       --max-depth <DEPTH>          Maximum directory depth to traverse
@@ -151,8 +219,26 @@ Options:
       --link-depth <DEPTH>         Maximum depth to traverse links (default: 1)
       --pdf <PATH>                 Save output as PDF
   -x, --xml                        Output in XML format for better LLM compatibility
+  -v, --verbose                    Verbosity level (-v, -vv, -vvv)
   -h, --help                       Print help
   -V, --version                    Print version
+
+Code Subcommand:
+  glimpse code <TARGET>            Generate call graph for a function
+    <TARGET>                       Target in file:function or :function format
+    --root <PATH>                  Project root directory [default: .]
+    --callers                      Include callers (reverse call graph)
+    --depth <N>                    Maximum depth to traverse
+    -f, --file <PATH>              Output file (default: stdout)
+    --strict                       Only resolve calls via imports
+    --precise                      Use LSP for type-aware resolution
+
+Index Subcommand:
+  glimpse index build [PATH]       Build or update the index
+    --force                        Force rebuild
+    --precise                      Use LSP for precise resolution
+  glimpse index clear [PATH]       Clear the index
+  glimpse index status [PATH]      Show index status and stats
 ```
 
 ## Configuration
@@ -186,11 +272,9 @@ default_excludes = [
 
 ## XML Output Format
 
-Glimpse supports XML output format designed for better compatibility with Large Language Models (LLMs) like Claude, GPT, and others. When using the `-x` or `--xml` flag, the output is structured with clear XML tags that help LLMs better understand the context and structure of your codebase.
+Glimpse supports XML output format designed for better compatibility with Large Language Models. When using the `-x` or `--xml` flag, the output is structured with clear XML tags that help LLMs better understand the context and structure of your codebase.
 
 ### XML Structure
-
-The XML output wraps all content in a `<context>` tag with the project name:
 
 ```xml
 <context name="my_project">
@@ -217,49 +301,50 @@ Total size: 45 bytes
 
 ### Benefits for LLM Usage
 
-- **Clear Context Boundaries**: The `<context>` wrapper helps LLMs understand where your codebase begins and ends
-- **Structured Information**: Separate sections for directory tree, file contents, and summary
-- **Proper Escaping**: XML-safe content that won't confuse parsers
-- **Project Identification**: Automatic project name detection for better context
-
-### Usage Examples
-
-```bash
-# Basic XML output
-glimpse -x /path/to/project
-
-# XML output with file save
-glimpse -x -f project.xml /path/to/project
-
-# XML output to stdout
-glimpse -x --print /path/to/project
-
-# XML output with specific includes
-glimpse -x -i "*.rs,*.py" /path/to/project
-```
+- Clear context boundaries with the `<context>` wrapper
+- Structured sections for directory tree, file contents, and summary
+- Proper XML escaping
+- Automatic project name detection
 
 ## Token Counting
 
 Glimpse supports two tokenizer backends:
 
-1. Tiktoken (Default): OpenAI's tokenizer implementation, perfect for accurately estimating tokens for GPT models.
+1. **Tiktoken** (Default): OpenAI's tokenizer implementation, perfect for accurately estimating tokens for GPT models.
 
-2. HuggingFace Tokenizers: Supports any model from the HuggingFace hub or local tokenizer files, great for custom models or other ML frameworks.
+2. **HuggingFace Tokenizers**: Supports any model from the HuggingFace hub or local tokenizer files, great for custom models or other ML frameworks.
 
 The token count appears in both file content views and the final summary, helping you estimate context window usage for large language models.
 
-Example token count output:
-```
-File: src/main.rs
-Tokens: 245
-==================================================
-// File contents here...
+## Git Repository Support
 
-Summary:
-Total files: 10
-Total size: 15360 bytes
-Total tokens: 2456
-```
+Glimpse can directly process Git repositories from:
+- GitHub
+- GitLab
+- Bitbucket
+- Azure DevOps
+- Any Git repository URL (ending with .git)
+
+The repository is cloned to a temporary directory, processed, and automatically cleaned up.
+
+## Web Content Processing
+
+Glimpse can process web pages and convert them to Markdown:
+- Preserves heading structure
+- Converts links (both relative and absolute)
+- Handles code blocks and quotes
+- Supports nested lists
+- Processes images and tables
+
+With link traversal enabled, Glimpse can also process linked pages up to a specified depth, making it perfect for documentation sites and wikis.
+
+## PDF Output
+
+Any processed content (local files, Git repositories, or web pages) can be saved as a PDF with:
+- Preserved formatting
+- Syntax highlighting
+- Table of contents
+- Page numbers
 
 ## Troubleshooting
 
@@ -274,33 +359,3 @@ Total tokens: 2456
 ## License
 
 MIT
-
-## Features in Detail
-
-### Git Repository Support
-Glimpse can directly process Git repositories from popular hosting services:
-- GitHub repositories
-- GitLab repositories
-- Bitbucket repositories
-- Azure DevOps repositories
-- Any Git repository URL (ending with .git)
-
-The repository is cloned to a temporary directory, processed, and automatically cleaned up.
-
-### Web Content Processing
-Glimpse can process web pages and convert them to Markdown:
-- Preserves heading structure
-- Converts links (both relative and absolute)
-- Handles code blocks and quotes
-- Supports nested lists
-- Processes images and tables
-
-With link traversal enabled, Glimpse can also process linked pages up to a specified depth, making it perfect for documentation sites and wikis.
-
-### PDF Output
-Any processed content (local files, Git repositories, or web pages) can be saved as a PDF with:
-- Preserved formatting
-- Syntax highlighting
-- Table of contents
-- Page numbers
-- Custom headers and footers
