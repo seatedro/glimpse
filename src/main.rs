@@ -2,6 +2,7 @@ mod analyzer;
 mod cli;
 mod output;
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -540,7 +541,11 @@ fn index_directory(root: &Path, index: &mut Index, hidden: bool, no_ignore: bool
     Ok(updated)
 }
 
+type CacheKey = (String, Option<String>, PathBuf);
+
 fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
+    use glimpse::code::index::ResolvedCall;
+
     let unresolved_count: usize = index
         .files
         .values()
@@ -563,6 +568,9 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
 
     let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
     let mut resolved = 0;
+    let mut cache: HashMap<CacheKey, Option<ResolvedCall>> = HashMap::new();
+    let mut cache_hits = 0usize;
+    let mut cache_misses = 0usize;
 
     let file_paths: Vec<_> = index.files.keys().cloned().collect();
 
@@ -588,7 +596,25 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
         for (call_idx, call) in &calls_to_resolve {
             pb.inc(1);
 
-            if let Some(resolved_call) = lsp_resolver.resolve_call_full(call, index) {
+            let cache_key: CacheKey = (
+                call.callee.clone(),
+                call.qualifier.clone(),
+                call.file.clone(),
+            );
+
+            if let Some(cached_result) = cache.get(&cache_key) {
+                cache_hits += 1;
+                if let Some(resolved_call) = cached_result.clone() {
+                    resolutions.push((*call_idx, resolved_call));
+                }
+                continue;
+            }
+
+            cache_misses += 1;
+            let result = lsp_resolver.resolve_call_full(call, index);
+            cache.insert(cache_key, result.clone());
+
+            if let Some(resolved_call) = result {
                 resolutions.push((*call_idx, resolved_call));
             }
         }
@@ -607,9 +633,21 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
 
     let stats = lsp_resolver.stats();
     if stats.by_server.is_empty() {
-        eprintln!("LSP: no servers responded (check if LSP binaries are working)");
+        debug!("LSP: no servers responded (check if LSP binaries are working)");
     } else {
-        eprintln!("LSP: {}", stats);
+        debug!("LSP: {}", stats);
+    }
+
+    let total_lookups = cache_hits + cache_misses;
+    if total_lookups > 0 {
+        let hit_rate = (cache_hits as f64 / total_lookups as f64) * 100.0;
+        debug!(
+            cache_hits,
+            total_lookups,
+            hit_rate = format!("{:.1}%", hit_rate),
+            unique_lookups = cache_misses,
+            "resolution cache stats"
+        );
     }
 
     Ok(resolved)
