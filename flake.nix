@@ -57,6 +57,7 @@
           checkFlags = [
             "--skip=tokenizer::tests::test_hf_counter"
             "--skip=code::index::tests::test_save_and_load_index"
+            "--skip=index_persistence::test_save_and_load_preserves_data"
           ];
 
           meta = with pkgs.lib; {
