@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
 
 use crate::analyzer::process_directory;
 use crate::cli::{Cli, CodeArgs, Commands, FunctionTarget, IndexCommand};
@@ -40,8 +42,16 @@ fn has_custom_options(args: &Cli) -> bool {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
+
     let mut config = load_config()?;
     let mut args = Cli::parse_with_config(&config)?;
+
+    debug!("config loaded, args parsed");
 
     if let Some(ref cmd) = args.command {
         return match cmd {
@@ -486,7 +496,13 @@ fn index_directory(root: &Path, index: &mut Index) -> Result<usize> {
         let records: Vec<FileRecord> = chunk
             .par_iter()
             .filter_map(|(path, rel_path, ext, mtime, size)| {
-                let extractor = Extractor::from_extension(ext).ok()?;
+                let extractor = match Extractor::from_extension(ext) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        debug!(ext = %ext, error = ?e, "no extractor for extension");
+                        return None;
+                    }
+                };
                 let source = fs::read(path).ok()?;
 
                 let mut parser = tree_sitter::Parser::new();
@@ -539,6 +555,7 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
             .progress_chars("#>-"),
     );
     pb.set_message("resolving calls with LSP...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
     let mut resolved = 0;
@@ -585,7 +602,9 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
     pb.finish_and_clear();
 
     let stats = lsp_resolver.stats();
-    if !stats.by_server.is_empty() {
+    if stats.by_server.is_empty() {
+        eprintln!("LSP: no servers responded (check if LSP binaries are working)");
+    } else {
         eprintln!("LSP: {}", stats);
     }
 

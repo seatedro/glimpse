@@ -68,12 +68,12 @@ definition_query = """
 """
 call_query = """
 (call_expression
-  function: [
-    (identifier) @name
-    (field_expression
-      operand: (_) @qualifier
-      member: (identifier) @name)
-  ]) @reference.call
+  function: (identifier) @name) @reference.call
+
+(call_expression
+  function: (field_expression
+    object: (_) @qualifier
+    member: (identifier) @name)) @reference.call
 """
 import_query = """
 (variable_declaration
@@ -139,8 +139,8 @@ import_query = """
 [language.lsp]
 binary = "clangd"
 args = []
-version = "19.1.0"
-url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}.zip"
+version = "21.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}-{version}.zip"
 archive = "zip"
 binary_path = "clangd_{version}/bin/clangd"
 
@@ -237,8 +237,8 @@ import_query = """
 [language.lsp]
 binary = "clangd"
 args = []
-version = "19.1.0"
-url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}.zip"
+version = "21.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}-{version}.zip"
 archive = "zip"
 binary_path = "clangd_{version}/bin/clangd"
 

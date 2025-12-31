@@ -371,6 +371,7 @@ mod tests {
             traverse_links: false,
             link_depth: None,
             xml: false,
+            verbose: 0,
         }
     }
 

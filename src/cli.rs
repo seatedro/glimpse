@@ -212,6 +212,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_tokens: bool,
 
+    /// Verbosity level (-v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
     #[arg(long, value_enum)]
     pub tokenizer: Option<CliTokenizerType>,
 

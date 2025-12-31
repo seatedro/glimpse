@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -6,6 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use anyhow::{bail, Context, Result};
+use tracing::{debug, trace, warn};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use lsp_types::{
@@ -85,17 +86,45 @@ fn detect_zig_version_from_zon(root: &Path) -> Option<String> {
 }
 
 fn detect_zig_version(root: &Path) -> Option<String> {
-    if let Ok(output) = Command::new("zig").arg("version").output() {
+    let zig_version = if let Ok(output) = Command::new("zig").arg("version").output() {
         if output.status.success() {
             let version_str = String::from_utf8_lossy(&output.stdout);
             let version = version_str.trim();
-            if let Some(base) = version.split('-').next() {
-                return Some(base.to_string());
+            version.split('-').next().map(|s| s.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let zig_version = zig_version.or_else(|| detect_zig_version_from_zon(root))?;
+
+    // zls releases may lag behind zig - try to find matching major.minor
+    // e.g., zig 0.15.2 -> try 0.15.2, 0.15.1, 0.15.0
+    let parts: Vec<&str> = zig_version.split('.').collect();
+    if parts.len() >= 2 {
+        let major_minor = format!("{}.{}", parts[0], parts[1]);
+        // Try decreasing patch versions
+        for patch in (0..=10).rev() {
+            let version = format!("{}.{}", major_minor, patch);
+            let url = format!(
+                "https://github.com/zigtools/zls/releases/download/{}/zls-x86_64-linux.tar.xz",
+                version
+            );
+            if let Ok(resp) = reqwest::blocking::Client::new()
+                .head(&url)
+                .send()
+            {
+                if resp.status().is_success() || resp.status().as_u16() == 302 {
+                    debug!(zig_version = %zig_version, zls_version = %version, "found matching zls version");
+                    return Some(version);
+                }
             }
         }
     }
 
-    detect_zig_version_from_zon(root)
+    Some(zig_version)
 }
 
 #[allow(clippy::literal_string_with_formatting_args)]
@@ -249,14 +278,14 @@ fn install_npm_package(lsp: &LspConfig) -> Result<PathBuf> {
         bail!("neither bun nor npm found. Install one of them or install the LSP manually");
     };
 
-    let pkg_dir = lsp_dir().join(&lsp.binary);
+    let pkg_dir = lsp_dir().join(format!("{}-pkg", &lsp.binary));
     fs::create_dir_all(&pkg_dir)?;
-
-    eprintln!("Installing {} via {} (local)...", package, pkg_manager);
 
     let init_status = Command::new(&pkg_manager_path)
         .args(["init", "--yes"])
         .current_dir(&pkg_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("failed to run {} init", pkg_manager))?;
 
@@ -265,17 +294,19 @@ fn install_npm_package(lsp: &LspConfig) -> Result<PathBuf> {
     }
 
     let packages: Vec<&str> = package.split_whitespace().collect();
-    let mut install_args = vec!["install"];
+    let mut install_args = vec!["add"];
     install_args.extend(packages.iter());
 
     let install_status = Command::new(&pkg_manager_path)
         .args(&install_args)
         .current_dir(&pkg_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .with_context(|| format!("failed to run {} install", pkg_manager))?;
+        .with_context(|| format!("failed to run {} add", pkg_manager))?;
 
     if !install_status.success() {
-        bail!("{} install failed for {}", pkg_manager, package);
+        bail!("{} add failed for {}", pkg_manager, package);
     }
 
     let bin_path = pkg_dir.join("node_modules").join(".bin").join(&lsp.binary);
@@ -290,7 +321,6 @@ fn install_npm_package(lsp: &LspConfig) -> Result<PathBuf> {
     let wrapper_path = lsp_binary_path(lsp);
     create_wrapper_script(&wrapper_path, &bin_path)?;
 
-    eprintln!("Installed {} to {}", lsp.binary, wrapper_path.display());
     Ok(wrapper_path)
 }
 
@@ -328,11 +358,11 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
     let install_dir = lsp_dir();
     fs::create_dir_all(&install_dir)?;
 
-    eprintln!("Installing {} via go install...", package);
-
     let status = Command::new(&go_path)
         .args(["install", package])
         .env("GOBIN", &install_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .context("failed to run go install")?;
 
@@ -342,7 +372,6 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
 
     let binary_path = install_dir.join(&lsp.binary);
     if binary_path.exists() {
-        eprintln!("Installed {} to {}", lsp.binary, binary_path.display());
         return Ok(binary_path);
     }
 
@@ -356,12 +385,16 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
 fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let local_path = lsp_binary_path(lsp);
     if local_path.exists() {
+        debug!(binary = %lsp.binary, path = %local_path.display(), "using cached LSP binary");
         return Ok(local_path);
     }
 
     if let Ok(system_path) = which::which(&lsp.binary) {
+        debug!(binary = %lsp.binary, path = %system_path.display(), "using system LSP binary");
         return Ok(system_path);
     }
+
+    debug!(binary = %lsp.binary, "LSP not found, attempting install");
 
     if lsp.url_template.is_some() {
         return download_and_extract(lsp, root);
@@ -518,17 +551,21 @@ impl LspClient {
         path: &Path,
         max_attempts: u32,
         pb: Option<&ProgressBar>,
+        server_name: Option<&str>,
     ) -> Result<bool> {
         use std::thread;
         use std::time::Duration;
 
         let uri = path_to_uri(path)?;
+        let name = server_name.unwrap_or("LSP");
+
+        debug!(server = %name, "waiting for LSP to be ready");
 
         if let Some(pb) = pb {
-            pb.set_message("waiting for syntax analysis...");
+            pb.set_message(format!("{}: waiting for indexing...", name));
         }
 
-        for _ in 0..10 {
+        for i in 0..10 {
             let params = lsp_types::DocumentSymbolParams {
                 text_document: TextDocumentIdentifier { uri: uri.clone() },
                 work_done_progress_params: Default::default(),
@@ -536,13 +573,16 @@ impl LspClient {
             };
 
             match self.send_request("textDocument/documentSymbol", serde_json::to_value(params)?) {
-                Ok(Value::Array(arr)) if !arr.is_empty() => break,
+                Ok(Value::Array(arr)) if !arr.is_empty() => {
+                    trace!(server = %name, attempt = i, "syntax analysis ready");
+                    break;
+                }
                 _ => thread::sleep(Duration::from_millis(200)),
             }
         }
 
         if let Some(pb) = pb {
-            pb.set_message("waiting for semantic analysis...");
+            pb.set_message(format!("{}: ready", name));
         }
 
         for attempt in 0..max_attempts {
@@ -552,7 +592,10 @@ impl LspClient {
             });
 
             match self.send_request("textDocument/hover", hover_params) {
-                Ok(result) if !result.is_null() => return Ok(true),
+                Ok(result) if !result.is_null() => {
+                    debug!(server = %name, attempts = attempt + 1, "LSP ready");
+                    return Ok(true);
+                }
                 _ => {}
             }
 
@@ -561,6 +604,7 @@ impl LspClient {
             }
         }
 
+        warn!(server = %name, "LSP did not become ready after {} attempts", max_attempts);
         Ok(false)
     }
 
@@ -736,19 +780,21 @@ impl std::fmt::Display for LspStats {
         let parts: Vec<String> = servers
             .iter()
             .map(|(name, stats)| {
+                let total = stats.resolved + stats.external + stats.no_definition + stats.not_indexed + stats.no_match;
                 format!(
-                    "{}: {} resolved, {} external, {} no-def",
-                    name, stats.resolved, stats.external, stats.no_definition
+                    "{}: {}/{} resolved ({} external, {} no-def, {} not-indexed, {} no-match)",
+                    name, stats.resolved, total, stats.external, stats.no_definition, stats.not_indexed, stats.no_match
                 )
             })
             .collect();
 
-        write!(f, "{}", parts.join(" | "))
+        write!(f, "{}", parts.join("\n     "))
     }
 }
 
 pub struct LspResolver {
     clients: HashMap<String, LspClient>,
+    failed_servers: HashSet<String>,
     root: PathBuf,
     file_cache: HashMap<PathBuf, String>,
     progress: Option<ProgressBar>,
@@ -759,6 +805,7 @@ impl LspResolver {
     pub fn new(root: &Path) -> Self {
         Self {
             clients: HashMap::new(),
+            failed_servers: HashSet::new(),
             root: root.to_path_buf(),
             file_cache: HashMap::new(),
             progress: None,
@@ -769,6 +816,7 @@ impl LspResolver {
     pub fn with_progress(root: &Path, pb: ProgressBar) -> Self {
         Self {
             clients: HashMap::new(),
+            failed_servers: HashSet::new(),
             root: root.to_path_buf(),
             file_cache: HashMap::new(),
             progress: Some(pb),
@@ -797,13 +845,30 @@ impl LspResolver {
 
         let key = lsp_config.binary.clone();
 
+        if self.failed_servers.contains(&key) {
+            bail!("{} previously failed to initialize", key);
+        }
+
         if !self.clients.contains_key(&key) {
             if let Some(ref pb) = self.progress {
                 pb.set_message(format!("starting {}...", lsp_config.binary));
             }
 
-            let mut client = LspClient::new(lsp_config, &self.root)?;
-            client.initialize()?;
+            let client = match LspClient::new(lsp_config, &self.root) {
+                Ok(mut c) => {
+                    if let Err(e) = c.initialize() {
+                        self.failed_servers.insert(key.clone());
+                        warn!(server = %lsp_config.binary, error = ?e, "LSP initialization failed");
+                        return Err(e);
+                    }
+                    c
+                }
+                Err(e) => {
+                    self.failed_servers.insert(key.clone());
+                    warn!(server = %lsp_config.binary, error = ?e, "LSP server failed to start");
+                    return Err(e);
+                }
+            };
 
             self.clients.insert(key.clone(), client);
         }
@@ -871,12 +936,22 @@ impl LspResolver {
         let line_content = lines[start_line_idx];
         let col = line_content.find(&callee).unwrap_or(0) as u32;
 
+        let pb = self.progress.clone();
         let client = self.get_or_create_client(&ext).ok()?;
         client.open_file(&abs_path, &content, language_id).ok()?;
 
         if !client.is_ready {
-            client.wait_for_ready(&abs_path, 60, None).ok()?;
+            let ready = client
+                .wait_for_ready(&abs_path, 60, pb.as_ref(), Some(&server_name))
+                .unwrap_or(false);
             client.is_ready = true;
+            if let Some(ref pb) = pb {
+                if ready {
+                    pb.set_message("resolving...");
+                } else {
+                    pb.set_message(format!("{}: indexing (may be slow)", server_name));
+                }
+            }
         }
 
         let signature = client
@@ -902,6 +977,7 @@ impl LspResolver {
         let location = match location {
             Some(loc) => loc,
             None => {
+                trace!(callee = %callee, file = %call.file.display(), "no definition found");
                 self.get_server_stats(&server_name).no_definition += 1;
                 return None;
             }
@@ -913,6 +989,7 @@ impl LspResolver {
         let rel_path = match def_path.strip_prefix(&root) {
             Ok(p) => p.to_path_buf(),
             Err(_) => {
+                trace!(callee = %callee, path = %def_path.display(), "definition is external");
                 self.get_server_stats(&server_name).external += 1;
                 return None;
             }
@@ -1182,7 +1259,7 @@ mod integration_tests {
             .expect("failed to open file");
 
         client
-            .wait_for_ready(&test_file, 30, None)
+            .wait_for_ready(&test_file, 30, None, None)
             .expect("wait_for_ready failed");
 
         // Line 61: ".filter(|path| is_url_or_git(path))"

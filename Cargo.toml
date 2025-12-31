@@ -51,6 +51,8 @@ flate2 = "1.0"
 zip = "2.2"
 tar = "0.4"
 xz2 = "0.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }
