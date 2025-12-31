@@ -1,27 +1,176 @@
-use crate::config::Config;
-use clap::{Parser, ValueEnum};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use clap::{Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
+
+use glimpse::{Config, Exclude, OutputFormat, TokenizerType};
+
 #[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
-pub enum OutputFormat {
+pub enum CliOutputFormat {
     Tree,
     Files,
     Both,
 }
 
+impl From<CliOutputFormat> for OutputFormat {
+    fn from(format: CliOutputFormat) -> Self {
+        match format {
+            CliOutputFormat::Tree => OutputFormat::Tree,
+            CliOutputFormat::Files => OutputFormat::Files,
+            CliOutputFormat::Both => OutputFormat::Both,
+        }
+    }
+}
+
+impl From<OutputFormat> for CliOutputFormat {
+    fn from(format: OutputFormat) -> Self {
+        match format {
+            OutputFormat::Tree => CliOutputFormat::Tree,
+            OutputFormat::Files => CliOutputFormat::Files,
+            OutputFormat::Both => CliOutputFormat::Both,
+        }
+    }
+}
+
 #[derive(Debug, Clone, ValueEnum)]
-pub enum TokenizerType {
+pub enum CliTokenizerType {
     Tiktoken,
     #[clap(name = "huggingface")]
     HuggingFace,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Exclude {
-    File(PathBuf),
-    Pattern(String),
+impl From<CliTokenizerType> for TokenizerType {
+    fn from(t: CliTokenizerType) -> Self {
+        match t {
+            CliTokenizerType::Tiktoken => TokenizerType::Tiktoken,
+            CliTokenizerType::HuggingFace => TokenizerType::HuggingFace,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Generate call graph for a function
+    #[command(name = "code")]
+    Code(CodeArgs),
+
+    /// Manage the code index
+    #[command(name = "index")]
+    Index(IndexArgs),
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct CodeArgs {
+    /// Target function in file:function format (e.g., src/main.rs:main or :main)
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Project root directory
+    #[arg(short, long, default_value = ".")]
+    pub root: PathBuf,
+
+    /// Include callers (reverse call graph)
+    #[arg(long)]
+    pub callers: bool,
+
+    /// Maximum depth to traverse
+    #[arg(short, long)]
+    pub depth: Option<usize>,
+
+    /// Output file (default: stdout)
+    #[arg(short = 'f', long)]
+    pub file: Option<PathBuf>,
+
+    /// Strict mode: only resolve calls via imports (no global name matching)
+    #[arg(long)]
+    pub strict: bool,
+
+    /// Precise mode: use LSP for type-aware resolution (slower but more accurate)
+    #[arg(long)]
+    pub precise: bool,
+
+    /// Include hidden files and directories
+    #[arg(short = 'H', long)]
+    pub hidden: bool,
+
+    /// Don't respect ignore files (.gitignore, .ignore, etc.)
+    #[arg(long)]
+    pub no_ignore: bool,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct IndexArgs {
+    #[command(subcommand)]
+    pub command: IndexCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum IndexCommand {
+    /// Build or update the index for a project
+    Build {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Force rebuild (ignore existing index)
+        #[arg(short, long)]
+        force: bool,
+
+        /// Use LSP for precise call resolution (slower but more accurate)
+        #[arg(long)]
+        precise: bool,
+
+        /// Include hidden files and directories
+        #[arg(short = 'H', long)]
+        hidden: bool,
+
+        /// Don't respect ignore files (.gitignore, .ignore, etc.)
+        #[arg(long)]
+        no_ignore: bool,
+    },
+
+    /// Clear the index for a project
+    Clear {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+
+    /// Show index status and stats
+    Status {
+        /// Project root directory
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionTarget {
+    pub file: Option<PathBuf>,
+    pub function: String,
+}
+
+impl FunctionTarget {
+    pub fn parse(target: &str) -> anyhow::Result<Self> {
+        if let Some((file, func)) = target.rsplit_once(':') {
+            if file.is_empty() {
+                Ok(Self {
+                    file: None,
+                    function: func.to_string(),
+                })
+            } else {
+                Ok(Self {
+                    file: Some(PathBuf::from(file)),
+                    function: func.to_string(),
+                })
+            }
+        } else {
+            Ok(Self {
+                file: None,
+                function: target.to_string(),
+            })
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -31,95 +180,79 @@ pub enum Exclude {
     version
 )]
 pub struct Cli {
-    /// Files or directories to analyze (multiple allowed), or a single URL/git repository
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     #[arg(default_value = ".")]
     pub paths: Vec<String>,
 
-    /// Print the config file path and exit
     #[arg(long)]
     pub config_path: bool,
 
-    /// Additional patterns to include (e.g. "*.rs,*.go") - adds to source file detection
     #[arg(short, long, value_delimiter = ',')]
     pub include: Option<Vec<String>>,
 
-    /// Only include files matching these patterns (e.g. "*.yml,*.toml") - replaces source file detection
     #[arg(long, value_delimiter = ',')]
     pub only_include: Option<Vec<String>>,
 
-    /// Additional patterns to exclude
     #[arg(short, long, value_parser = parse_exclude, value_delimiter = ',')]
     pub exclude: Option<Vec<Exclude>>,
 
-    /// Maximum file size in bytes
     #[arg(short, long)]
     pub max_size: Option<u64>,
 
-    /// Maximum directory depth
     #[arg(long)]
     pub max_depth: Option<usize>,
 
-    /// Output format (tree, files, or both)
     #[arg(short, long, value_enum)]
-    pub output: Option<OutputFormat>,
+    pub output: Option<CliOutputFormat>,
 
-    /// Output file path (optional)
     #[arg(short = 'f', long, num_args = 0..=1, default_missing_value = "GLIMPSE.md")]
     pub file: Option<PathBuf>,
 
-    /// Init glimpse config file
     #[arg(long, default_value_t = false)]
     pub config: bool,
 
-    /// Print to stdout instead
     #[arg(short, long)]
     pub print: bool,
 
-    /// Number of threads for parallel processing
     #[arg(short, long)]
     pub threads: Option<usize>,
 
-    /// Show hidden files and directories
     #[arg(short = 'H', long)]
     pub hidden: bool,
 
-    /// Don't respect .gitignore files
     #[arg(long)]
     pub no_ignore: bool,
 
-    /// Ignore Token Count
     #[arg(long)]
     pub no_tokens: bool,
 
-    /// Tokenizer to use (tiktoken or huggingface)
-    #[arg(long, value_enum)]
-    pub tokenizer: Option<TokenizerType>,
+    /// Verbosity level (-v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
 
-    /// Model to use for HuggingFace tokenizer
+    #[arg(long, value_enum)]
+    pub tokenizer: Option<CliTokenizerType>,
+
     #[arg(long)]
     pub model: Option<String>,
 
-    /// Path to local tokenizer file
     #[arg(long)]
     pub tokenizer_file: Option<PathBuf>,
 
-    /// Interactive mode
     #[arg(long)]
     pub interactive: bool,
 
-    /// Output as Pdf
     #[arg(long)]
     pub pdf: Option<PathBuf>,
 
-    /// Traverse sublinks when processing URLs
     #[arg(long)]
     pub traverse_links: bool,
 
-    /// Maximum depth to traverse sublinks (default: 1)
     #[arg(long)]
     pub link_depth: Option<usize>,
 
-    /// Output in XML format for better LLM compatibility
     #[arg(short = 'x', long)]
     pub xml: bool,
 }
@@ -128,14 +261,12 @@ impl Cli {
     pub fn parse_with_config(config: &Config) -> anyhow::Result<Self> {
         let mut cli = Self::parse();
 
-        // Apply config defaults if CLI args aren't specified
         cli.max_size = cli.max_size.or(Some(config.max_size));
         cli.max_depth = cli.max_depth.or(Some(config.max_depth));
-        cli.output = cli.output.or(Some(OutputFormat::from(
-            config.default_output_format.clone(),
-        )));
+        cli.output = cli
+            .output
+            .or(Some(config.default_output_format.clone().into()));
 
-        // Merge excludes from config and CLI
         if let Some(mut excludes) = cli.exclude.take() {
             excludes.extend(config.default_excludes.clone());
             cli.exclude = Some(excludes);
@@ -143,19 +274,17 @@ impl Cli {
             cli.exclude = Some(config.default_excludes.clone());
         }
 
-        // Set default tokenizer if none specified but token counting is enabled
         if !cli.no_tokens && cli.tokenizer.is_none() {
             cli.tokenizer = Some(match config.default_tokenizer.as_str() {
-                "huggingface" => TokenizerType::HuggingFace,
-                _ => TokenizerType::Tiktoken,
+                "huggingface" => CliTokenizerType::HuggingFace,
+                _ => CliTokenizerType::Tiktoken,
             });
         }
 
-        // Set default model for HuggingFace if none specified
         if cli
             .tokenizer
             .as_ref()
-            .is_some_and(|t| matches!(t, TokenizerType::HuggingFace))
+            .is_some_and(|t| matches!(t, CliTokenizerType::HuggingFace))
             && cli.model.is_none()
             && cli.tokenizer_file.is_none()
         {
@@ -172,7 +301,6 @@ impl Cli {
     }
 
     pub fn validate_args(&self, is_url: bool) -> anyhow::Result<()> {
-        // Validate that both include and only_include are not used together
         if self.include.is_some() && self.only_include.is_some() {
             return Err(anyhow::anyhow!(
                 "Cannot use both --include and --only-include flags together. Use --include for additive behavior (add to source files) or --only-include for replacement behavior (only specified patterns)."
@@ -195,6 +323,14 @@ impl Cli {
         }
         Ok(())
     }
+
+    pub fn get_output_format(&self) -> Option<OutputFormat> {
+        self.output.clone().map(|f| f.into())
+    }
+
+    pub fn get_tokenizer_type(&self) -> Option<TokenizerType> {
+        self.tokenizer.clone().map(|t| t.into())
+    }
 }
 
 fn parse_exclude(value: &str) -> Result<Exclude, String> {
@@ -203,5 +339,45 @@ fn parse_exclude(value: &str) -> Result<Exclude, String> {
         Ok(Exclude::File(path))
     } else {
         Ok(Exclude::Pattern(value.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_function_target_parse_with_file() {
+        let target = FunctionTarget::parse("src/main.rs:main").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("src/main.rs")));
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_without_file() {
+        let target = FunctionTarget::parse(":main").unwrap();
+        assert_eq!(target.file, None);
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_function_only() {
+        let target = FunctionTarget::parse("main").unwrap();
+        assert_eq!(target.file, None);
+        assert_eq!(target.function, "main");
+    }
+
+    #[test]
+    fn test_function_target_parse_nested_path() {
+        let target = FunctionTarget::parse("src/code/graph.rs:build").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("src/code/graph.rs")));
+        assert_eq!(target.function, "build");
+    }
+
+    #[test]
+    fn test_function_target_parse_windows_path() {
+        let target = FunctionTarget::parse("C:\\src\\main.rs:main").unwrap();
+        assert_eq!(target.file, Some(PathBuf::from("C:\\src\\main.rs")));
+        assert_eq!(target.function, "main");
     }
 }

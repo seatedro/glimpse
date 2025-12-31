@@ -1,0 +1,646 @@
+[[language]]
+name = "go"
+extensions = ["go"]
+repo = "https://github.com/tree-sitter/tree-sitter-go"
+branch = "master"
+symbol = "tree_sitter_go"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_declaration
+    name: (field_identifier) @name
+    body: (block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (parenthesized_expression (identifier) @name)
+    (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name)
+    (parenthesized_expression (selector_expression
+      operand: (_) @qualifier
+      field: (field_identifier) @name))
+  ]) @reference.call
+"""
+import_query = """
+(import_spec
+  name: [
+    (package_identifier) @alias
+    (dot) @dot_import
+    (blank_identifier) @side_effect
+  ]?
+  path: [
+    (interpreted_string_literal) @path
+    (raw_string_literal) @path
+  ])
+"""
+
+[language.lsp]
+binary = "gopls"
+args = ["serve"]
+go_package = "golang.org/x/tools/gopls@latest"
+
+[[language]]
+name = "zig"
+extensions = ["zig"]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
+branch = "master"
+symbol = "tree_sitter_zig"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: (identifier) @name) @reference.call
+
+(call_expression
+  function: (field_expression
+    object: (_) @qualifier
+    member: (identifier) @name)) @reference.call
+"""
+import_query = """
+(variable_declaration
+  (identifier) @name
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments
+      (string (string_content) @path)))
+  (#eq? @_builtin "@import")) @import
+"""
+
+[language.lsp]
+binary = "zls"
+args = []
+url_template = "https://github.com/zigtools/zls/releases/download/{version}/zls-{target}.tar.xz"
+archive = "tar.xz"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "x86_64-linux"
+"aarch64-unknown-linux-gnu" = "aarch64-linux"
+"x86_64-apple-darwin" = "x86_64-macos"
+"aarch64-apple-darwin" = "aarch64-macos"
+
+[[language]]
+name = "c"
+extensions = ["c", "h"]
+repo = "https://github.com/tree-sitter/tree-sitter-c"
+branch = "master"
+symbol = "tree_sitter_c"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: [
+      (function_declarator
+        declarator: (identifier) @name)
+      (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @name))
+    ]
+    body: (compound_statement) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (field_expression
+      argument: (_) @qualifier
+      field: (field_identifier) @name)
+    (parenthesized_expression (identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(preproc_include
+  path: [
+    (system_lib_string) @system_path
+    (string_literal) @local_path
+  ]) @include
+"""
+
+[language.lsp]
+binary = "clangd"
+args = []
+version = "21.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}-{version}.zip"
+archive = "zip"
+binary_path = "clangd_{version}/bin/clangd"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x86_64"
+"x86_64-apple-darwin" = "mac-x86_64"
+"aarch64-apple-darwin" = "mac-arm64"
+"x86_64-pc-windows-msvc" = "windows-x86_64"
+
+[[language]]
+name = "cpp"
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx"]
+repo = "https://github.com/tree-sitter/tree-sitter-cpp"
+branch = "master"
+symbol = "tree_sitter_cpp"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (identifier) @name)
+    body: (compound_statement) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (qualified_identifier
+        name: (identifier) @name))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @name))
+    body: (compound_statement) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (qualified_identifier
+          name: [(identifier) (operator_name) (destructor_name)] @name)))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (function_definition
+    declarator: (function_declarator
+      declarator: (qualified_identifier
+        name: (destructor_name) @name))
+    body: (compound_statement) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (template_declaration
+    (function_definition
+      declarator: (function_declarator
+        declarator: (qualified_identifier
+          name: (identifier) @name))
+      body: (compound_statement) @body)) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (qualified_identifier
+      scope: (_) @qualifier
+      name: (identifier) @name)
+    (template_function name: (identifier) @name)
+    (field_expression
+      argument: (_) @qualifier
+      field: (field_identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(preproc_include
+  path: [
+    (system_lib_string) @system_path
+    (string_literal) @local_path
+  ]) @include
+"""
+
+[language.lsp]
+binary = "clangd"
+args = []
+version = "21.1.0"
+url_template = "https://github.com/clangd/clangd/releases/download/{version}/clangd-{target}-{version}.zip"
+archive = "zip"
+binary_path = "clangd_{version}/bin/clangd"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x86_64"
+"x86_64-apple-darwin" = "mac-x86_64"
+"aarch64-apple-darwin" = "mac-arm64"
+"x86_64-pc-windows-msvc" = "windows-x86_64"
+
+[[language]]
+name = "bash"
+extensions = ["sh", "bash"]
+repo = "https://github.com/tree-sitter/tree-sitter-bash"
+branch = "master"
+symbol = "tree_sitter_bash"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    name: (word) @name
+    body: (compound_statement) @body) @function.definition
+)
+"""
+call_query = """
+(command_name (word) @name) @reference.call
+"""
+import_query = """
+(command
+  name: (command_name) @_cmd
+  argument: [
+    (word) @path
+    (string) @path
+    (raw_string) @path
+    (concatenation) @path
+  ]
+  (#any-of? @_cmd "source" ".")) @import
+"""
+
+[language.lsp]
+binary = "bash-language-server"
+args = ["start"]
+npm_package = "bash-language-server"
+
+[[language]]
+name = "python"
+extensions = ["py"]
+repo = "https://github.com/tree-sitter/tree-sitter-python"
+branch = "master"
+symbol = "tree_sitter_python"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_definition
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (class_definition
+    name: (identifier) @name
+    body: (block) @body) @class.definition
+)
+"""
+call_query = """
+(call
+  function: [
+    (identifier) @name
+    (attribute
+      object: (_) @qualifier
+      attribute: (identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(import_statement
+  name: [
+    (dotted_name) @path
+    (aliased_import
+      name: (dotted_name) @path
+      alias: (identifier) @alias)
+  ]) @import
+
+(import_from_statement
+  module_name: [
+    (dotted_name) @module
+    (relative_import) @module
+  ]
+  name: [
+    (dotted_name) @name
+    (aliased_import
+      name: (dotted_name) @name
+      alias: (identifier) @alias)
+  ]?
+  (wildcard_import)? @wildcard) @import
+"""
+
+[language.lsp]
+binary = "pyright-langserver"
+args = ["--stdio"]
+npm_package = "pyright"
+
+[[language]]
+name = "typescript"
+extensions = ["ts", "mts", "cts"]
+repo = "https://github.com/tree-sitter/tree-sitter-typescript"
+branch = "master"
+subpath = "typescript"
+symbol = "tree_sitter_typescript"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (statement_block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function
+        body: (_) @body))) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name
+    body: (statement_block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (member_expression
+      object: (_) @qualifier
+      property: (property_identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(import_statement
+  (import_clause
+    [
+      (identifier) @default_import
+      (named_imports
+        (import_specifier
+          name: (identifier) @name
+          alias: (identifier)? @alias))
+      (namespace_import (identifier) @namespace)
+    ])
+  source: (string (string_fragment) @source)) @import
+"""
+
+[language.lsp]
+binary = "typescript-language-server"
+args = ["--stdio"]
+npm_package = "typescript-language-server typescript"
+
+[[language]]
+name = "rust"
+extensions = ["rs"]
+repo = "https://github.com/tree-sitter/tree-sitter-rust"
+branch = "master"
+symbol = "tree_sitter_rust"
+definition_query = """
+(
+  (line_comment)* @doc
+  .
+  (function_item
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (scoped_identifier
+      path: (_) @qualifier
+      name: (identifier) @name)
+    (field_expression
+      value: (_) @qualifier  
+      field: (field_identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(use_declaration
+  argument: [
+    (identifier) @path
+    (scoped_identifier) @path
+    (use_as_clause
+      path: [
+        (identifier) @path
+        (scoped_identifier) @path
+      ]
+      alias: (identifier) @alias)
+    (use_list) @list
+    (scoped_use_list
+      path: [
+        (identifier) @path
+        (scoped_identifier) @path
+      ])
+    (use_wildcard) @wildcard
+  ]) @import
+
+(mod_item
+  name: (identifier) @mod_name) @mod_decl
+"""
+
+[language.lsp]
+binary = "rust-analyzer"
+args = []
+version = "2024-12-23"
+url_template = "https://github.com/rust-lang/rust-analyzer/releases/download/{version}/rust-analyzer-{target}.gz"
+archive = "gz"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "x86_64-unknown-linux-gnu"
+"x86_64-unknown-linux-musl" = "x86_64-unknown-linux-musl"
+"aarch64-unknown-linux-gnu" = "aarch64-unknown-linux-gnu"
+"x86_64-apple-darwin" = "x86_64-apple-darwin"
+"aarch64-apple-darwin" = "aarch64-apple-darwin"
+"x86_64-pc-windows-msvc" = "x86_64-pc-windows-msvc"
+
+[[language]]
+name = "javascript"
+extensions = ["js", "mjs", "cjs"]
+repo = "https://github.com/tree-sitter/tree-sitter-javascript"
+branch = "master"
+symbol = "tree_sitter_javascript"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name
+    body: (statement_block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: (arrow_function
+        body: (_) @body))) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (method_definition
+    name: (property_identifier) @name
+    body: (statement_block) @body) @method.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (member_expression
+      object: (_) @qualifier
+      property: (property_identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(import_statement
+  (import_clause
+    [
+      (identifier) @default_import
+      (named_imports
+        (import_specifier
+          name: (identifier) @name
+          alias: (identifier)? @alias))
+      (namespace_import (identifier) @namespace)
+    ])
+  source: (string (string_fragment) @source)) @import
+
+(call_expression
+  function: (identifier) @_require
+  arguments: (arguments (string (string_fragment) @source))
+  (#eq? @_require "require")) @require
+"""
+
+[language.lsp]
+binary = "typescript-language-server"
+args = ["--stdio"]
+npm_package = "typescript-language-server typescript"
+
+[[language]]
+name = "java"
+extensions = ["java"]
+repo = "https://github.com/tree-sitter/tree-sitter-java"
+branch = "master"
+symbol = "tree_sitter_java"
+definition_query = """
+(class_body
+  (block_comment) @doc
+  .
+  (method_declaration
+    name: (identifier) @name
+    body: (_) @body) @method.definition
+)
+(class_body
+  (block_comment) @doc
+  .
+  (constructor_declaration
+    name: (identifier) @name
+    body: (_) @body) @method.definition
+)
+(method_declaration
+  name: (identifier) @name
+  body: (_) @body) @method.definition
+(constructor_declaration
+  name: (identifier) @name
+  body: (_) @body) @method.definition
+"""
+call_query = """
+(method_invocation
+  object: (_)? @qualifier
+  name: (identifier) @name) @reference.call
+(object_creation_expression
+  type: (type_identifier) @name) @reference.call
+"""
+import_query = """
+(import_declaration
+  [
+    (scoped_identifier) @path
+    (identifier) @path
+  ]
+  (asterisk)? @wildcard) @import
+"""
+
+[language.lsp]
+binary = "jdtls"
+args = []
+
+[[language]]
+name = "scala"
+extensions = ["scala", "sc"]
+repo = "https://github.com/tree-sitter/tree-sitter-scala"
+branch = "master"
+symbol = "tree_sitter_scala"
+definition_query = """
+(
+  (block_comment)* @doc
+  .
+  (function_definition
+    name: (identifier) @name
+    body: (_) @body) @function.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (function_declaration
+    name: (identifier) @name) @function.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (class_definition
+    name: (identifier) @name
+    body: (template_body) @body) @class.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (object_definition
+    name: (identifier) @name
+    body: (template_body) @body) @object.definition
+)
+(
+  (block_comment)* @doc
+  .
+  (trait_definition
+    name: (identifier) @name
+    body: (template_body) @body) @trait.definition
+)
+"""
+call_query = """
+(call_expression
+  function: [
+    (identifier) @name
+    (field_expression
+      value: (_) @qualifier
+      field: (identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(import_declaration
+  path: (_)+ @path
+  [
+    (namespace_wildcard) @wildcard
+    (namespace_selectors) @selectors
+    (as_renamed_identifier) @alias
+  ]?) @import
+"""
+
+[language.lsp]
+binary = "metals"
+args = []

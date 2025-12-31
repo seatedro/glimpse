@@ -1,26 +1,24 @@
-use crate::cli::{Cli, Exclude, OutputFormat, TokenizerType};
-use crate::file_picker::FilePicker;
-use crate::output::{
-    display_token_counts, generate_output, generate_pdf, handle_output, FileEntry,
-};
-use crate::source_detection;
-use crate::tokenizer::TokenCounter;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use std::fs;
-use std::path::{Path, PathBuf};
+
+use glimpse::tui::FilePicker;
+use glimpse::{is_source_file, Exclude, FileEntry, OutputFormat, TokenCounter, TokenizerType};
+
+use crate::cli::Cli;
+use crate::output::{display_token_counts, generate_output, generate_pdf, handle_output};
 
 pub fn process_directory(args: &Cli) -> Result<()> {
-    // Configure thread pool if specified
     if let Some(threads) = args.threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             .build_global()?;
     }
 
-    // Set up progress bar
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -30,25 +28,25 @@ pub fn process_directory(args: &Cli) -> Result<()> {
     pb.set_message("Scanning files...");
 
     let output_format = args
-        .output
-        .clone()
+        .get_output_format()
         .expect("output format should be set from config");
     let entries = process_entries(args)?;
     pb.finish();
 
     if let Some(pdf_path) = &args.pdf {
-        let pdf_data = generate_pdf(&entries, args.output.clone().unwrap_or(OutputFormat::Both))?;
+        let pdf_data = generate_pdf(
+            &entries,
+            args.get_output_format().unwrap_or(OutputFormat::Both),
+        )?;
         fs::write(pdf_path, pdf_data)?;
         println!("PDF output written to: {}", pdf_path.display());
     } else {
-        // Determine project name for XML output
         let project_name = if args.xml {
             Some(determine_project_name(&args.paths))
         } else {
             None
         };
 
-        // Handle output (print/copy/save)
         let output = generate_output(&entries, output_format, args.xml, project_name)?;
         handle_output(output, args)?;
     }
@@ -65,14 +63,12 @@ fn determine_project_name(paths: &[String]) -> String {
     if let Some(first_path) = paths.first() {
         let path = std::path::Path::new(first_path);
 
-        // If it's a directory, use its name
         if path.is_dir() {
             if let Some(name) = path.file_name() {
                 return name.to_string_lossy().to_string();
             }
         }
 
-        // If it's a file, use the parent directory name
         if path.is_file() {
             if let Some(parent) = path.parent() {
                 if let Some(name) = parent.file_name() {
@@ -81,7 +77,6 @@ fn determine_project_name(paths: &[String]) -> String {
             }
         }
 
-        // Fallback to just the path itself
         first_path.clone()
     } else {
         "project".to_string()
@@ -89,7 +84,6 @@ fn determine_project_name(paths: &[String]) -> String {
 }
 
 fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -> bool {
-    // Basic file checks
     if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
         return false;
     }
@@ -97,7 +91,6 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
     let path = entry.path();
     let max_size = args.max_size.expect("max_size should be set from config");
 
-    // Size check
     if !entry
         .metadata()
         .map(|m| m.len() <= max_size)
@@ -106,7 +99,6 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
         return false;
     }
 
-    // Handle replacement mode with --only-include
     if let Some(ref only_includes) = args.only_include {
         let matches_only_include = matches_include_patterns(path, only_includes, base_path);
 
@@ -114,7 +106,6 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
             return false;
         }
 
-        // Apply excludes if any
         if let Some(ref excludes) = args.exclude {
             return !matches_exclude_patterns(path, excludes, base_path);
         }
@@ -122,25 +113,20 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
         return true;
     }
 
-    // Handle additive mode
-    // Check if it's a source file
-    let is_source = source_detection::is_source_file(path);
+    let is_source = is_source_file(path);
 
-    // Check if it matches additional include patterns
     let matches_include = if let Some(ref includes) = args.include {
         matches_include_patterns(path, includes, base_path)
     } else {
         false
     };
 
-    // Include if EITHER source file OR matches include patterns
     let should_include = is_source || matches_include;
 
     if !should_include {
         return false;
     }
 
-    // Apply excludes to the union
     if let Some(ref excludes) = args.exclude {
         return !matches_exclude_patterns(path, excludes, base_path);
     }
@@ -151,27 +137,23 @@ fn should_process_file(entry: &ignore::DirEntry, args: &Cli, base_path: &Path) -
 fn matches_include_patterns(path: &Path, includes: &[String], base_path: &Path) -> bool {
     let mut override_builder = OverrideBuilder::new(base_path);
 
-    // Add include patterns (positive)
     for pattern in includes {
         if let Err(e) = override_builder.add(pattern) {
             eprintln!("Warning: Invalid include pattern '{pattern}': {e}");
         }
     }
 
-    let overrides = override_builder.build().unwrap_or_else(|_| {
-        // Return a default override that matches nothing if build fails
-        OverrideBuilder::new(base_path).build().unwrap()
-    });
+    let overrides = override_builder
+        .build()
+        .unwrap_or_else(|_| OverrideBuilder::new(base_path).build().unwrap());
     let match_result = overrides.matched(path, false);
 
-    // Must be whitelisted and not ignored
     match_result.is_whitelist() && !match_result.is_ignore()
 }
 
 fn matches_exclude_patterns(path: &Path, excludes: &[Exclude], base_path: &Path) -> bool {
     let mut override_builder = OverrideBuilder::new(base_path);
 
-    // Add exclude patterns (negative)
     for exclude in excludes {
         match exclude {
             Exclude::Pattern(pattern) => {
@@ -185,7 +167,6 @@ fn matches_exclude_patterns(path: &Path, excludes: &[Exclude], base_path: &Path)
                 }
             }
             Exclude::File(file_path) => {
-                // Handle file exclusions
                 if file_path.is_absolute() {
                     if file_path.exists() {
                         if let Ok(relative_path) = file_path.strip_prefix(base_path) {
@@ -209,10 +190,9 @@ fn matches_exclude_patterns(path: &Path, excludes: &[Exclude], base_path: &Path)
         }
     }
 
-    let overrides = override_builder.build().unwrap_or_else(|_| {
-        // Return a default override that matches nothing if build fails
-        OverrideBuilder::new(base_path).build().unwrap()
-    });
+    let overrides = override_builder
+        .build()
+        .unwrap_or_else(|_| OverrideBuilder::new(base_path).build().unwrap());
     let match_result = overrides.matched(path, false);
 
     match_result.is_ignore()
@@ -231,7 +211,6 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
         );
         let selected_paths = picker.run()?;
 
-        // Process selected files
         selected_paths
             .into_iter()
             .filter_map(|path| {
@@ -270,7 +249,6 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
 
                 all_entries.extend(dir_entries);
             } else if path.is_file() {
-                // Process single file
                 let entry = ignore::WalkBuilder::new(path)
                     .build()
                     .next()
@@ -290,10 +268,10 @@ pub fn process_entries(args: &Cli) -> Result<Vec<FileEntry>> {
     Ok(entries)
 }
 
-// Removed the is_excluded function as it's now handled by WalkBuilder overrides
-
 pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
-    match args.tokenizer.as_ref().unwrap_or(&TokenizerType::Tiktoken) {
+    let tokenizer_type = args.get_tokenizer_type().unwrap_or(TokenizerType::Tiktoken);
+
+    match tokenizer_type {
         TokenizerType::Tiktoken => {
             if let Some(model) = &args.model {
                 TokenCounter::new(model)
@@ -315,10 +293,8 @@ pub fn create_token_counter(args: &Cli) -> Result<TokenCounter> {
 
 fn process_file(entry: &ignore::DirEntry, base_path: &Path) -> Result<FileEntry> {
     let relative_path = if base_path.is_file() {
-        // If base_path is a file, use the file name as the relative path
         base_path.file_name().map(PathBuf::from).unwrap_or_default()
     } else {
-        // Otherwise, strip the base path as usual
         entry.path().strip_prefix(base_path)?.to_path_buf()
     };
     let content = fs::read_to_string(entry.path())?;
@@ -337,11 +313,12 @@ mod tests {
     use std::io::Write;
     use tempfile::{tempdir, TempDir};
 
+    use crate::cli::CliOutputFormat;
+
     fn setup_test_directory() -> Result<(TempDir, Vec<PathBuf>)> {
         let dir = tempdir()?;
         let mut created_files = Vec::new();
 
-        // Create a nested directory structure with various file types
         let test_files = vec![
             ("src/main.rs", "fn main() {}"),
             ("src/lib.rs", "pub fn lib() {}"),
@@ -370,15 +347,16 @@ mod tests {
 
     fn create_test_cli(dir_path: &Path) -> Cli {
         Cli {
+            command: None,
             config: false,
             paths: vec![dir_path.to_string_lossy().to_string()],
             config_path: false,
             include: None,
             only_include: None,
             exclude: None,
-            max_size: Some(10 * 1024 * 1024), // 10MB
+            max_size: Some(10 * 1024 * 1024),
             max_depth: Some(10),
-            output: Some(OutputFormat::Both),
+            output: Some(CliOutputFormat::Both),
             file: None,
             print: true,
             threads: None,
@@ -393,6 +371,7 @@ mod tests {
             traverse_links: false,
             link_depth: None,
             xml: false,
+            verbose: 0,
         }
     }
 
@@ -403,11 +382,9 @@ mod tests {
         let main_rs_path = dir.path().join("src/main.rs");
 
         let test_cases = vec![
-            // Pattern exclusions
             (Exclude::Pattern("**/*.rs".to_string()), true),
             (Exclude::Pattern("**/*.js".to_string()), false),
             (Exclude::Pattern("test/**".to_string()), false),
-            // File exclusions
             (Exclude::File(main_rs_path.clone()), true),
             (Exclude::File(PathBuf::from("nonexistent.rs")), false),
         ];
@@ -417,8 +394,6 @@ mod tests {
 
             match &exclude {
                 Exclude::Pattern(pattern) => {
-                    // For patterns that should exclude, we need to add a "!" prefix
-                    // to make them negative patterns (exclusions)
                     let exclude_pattern = if !pattern.starts_with('!') {
                         format!("!{pattern}")
                     } else {
@@ -428,13 +403,11 @@ mod tests {
                 }
                 Exclude::File(file_path) => {
                     if file_path.exists() {
-                        // Get the file path relative to the test directory
                         let rel_path = if file_path.is_absolute() {
                             file_path.strip_prefix(dir.path()).unwrap_or(file_path)
                         } else {
                             file_path
                         };
-                        // Add as a negative pattern
                         let pattern = format!("!{}", rel_path.display());
                         override_builder.add(&pattern).unwrap();
                     }
@@ -458,11 +431,9 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test excluding all Rust files
         cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
         let entries = process_entries(&cli)?;
 
-        // Verify no .rs files were processed
         for entry in &entries {
             assert_ne!(
                 entry.path.extension().and_then(|ext| ext.to_str()),
@@ -472,7 +443,6 @@ mod tests {
             );
         }
 
-        // Test excluding specific directories
         cli.exclude = Some(vec![
             Exclude::Pattern("**/node_modules/**".to_string()),
             Exclude::Pattern("**/target/**".to_string()),
@@ -480,7 +450,6 @@ mod tests {
         ]);
         let entries = process_entries(&cli)?;
 
-        // Verify excluded directories were not processed
         for entry in &entries {
             let path_str = entry.path.to_string_lossy();
             assert!(
@@ -500,14 +469,11 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test including additional Rust files (should get all source files)
         cli.include = Some(vec!["**/*.rs".to_string()]);
         let entries = process_entries(&cli)?;
 
-        // Should include all source files (since .rs is already a source extension)
         assert!(!entries.is_empty(), "Should have found files");
 
-        // Should include source files: .rs, .py, .md
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
@@ -516,23 +482,19 @@ mod tests {
         assert!(extensions.contains(&"py"));
         assert!(extensions.contains(&"md"));
 
-        // Test including a non-source extension as additional
         cli.include = Some(vec!["**/*.xyz".to_string()]);
-
-        // Create a .xyz file
         fs::write(dir.path().join("test.xyz"), "data")?;
 
         let entries = process_entries(&cli)?;
 
-        // Should include BOTH .xyz files AND normal source files
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"xyz")); // Additional pattern
-        assert!(extensions.contains(&"rs")); // Normal source file
-        assert!(extensions.contains(&"py")); // Normal source file
-        assert!(extensions.contains(&"md")); // Normal source file
+        assert!(extensions.contains(&"xyz"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
         Ok(())
     }
@@ -542,16 +504,13 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test additional includes with excludes - should get all source files plus additional, minus excludes
         cli.include = Some(vec!["**/*.xyz".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("**/test.rs".to_string())]);
 
-        // Create a .xyz file
         fs::write(dir.path().join("test.xyz"), "data")?;
 
         let entries = process_entries(&cli)?;
 
-        // Should include all source files + .xyz files, but exclude test.rs
         assert!(!entries.is_empty(), "Should have found files");
 
         let extensions: Vec<_> = entries
@@ -559,13 +518,11 @@ mod tests {
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
 
-        // Should have .xyz (additional) plus source files (.rs, .py, .md)
-        assert!(extensions.contains(&"xyz")); // Additional pattern
-        assert!(extensions.contains(&"rs")); // Source files (but not test.rs)
-        assert!(extensions.contains(&"py")); // Source files
-        assert!(extensions.contains(&"md")); // Source files
+        assert!(extensions.contains(&"xyz"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
-        // Verify test.rs was excluded
         for entry in &entries {
             assert!(
                 !entry.path.to_string_lossy().contains("test.rs"),
@@ -574,12 +531,10 @@ mod tests {
             );
         }
 
-        // Test excluding a directory
         cli.include = Some(vec!["**/*.xyz".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("**/nested/**".to_string())]);
         let entries = process_entries(&cli)?;
 
-        // Should include source files + .xyz, but exclude nested directory
         for entry in &entries {
             assert!(
                 !entry.path.to_string_lossy().contains("nested"),
@@ -596,15 +551,11 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test with depth limit of 1
         cli.max_depth = Some(1);
         process_directory(&cli)?;
-        // Verify only top-level files were processed
 
-        // Test with depth limit of 2
         cli.max_depth = Some(2);
         process_directory(&cli)?;
-        // Verify files up to depth 2 were processed
 
         Ok(())
     }
@@ -614,15 +565,11 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test without hidden files
         cli.hidden = false;
         process_directory(&cli)?;
-        // Verify hidden files were not processed
 
-        // Test with hidden files
         cli.hidden = true;
         process_directory(&cli)?;
-        // Verify hidden files were processed
 
         Ok(())
     }
@@ -634,7 +581,6 @@ mod tests {
 
         let cli = create_test_cli(rust_file);
         process_directory(&cli)?;
-        // Verify single file was processed correctly
 
         Ok(())
     }
@@ -643,19 +589,16 @@ mod tests {
     fn test_include_patterns_extend_source_detection() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create a .peb file (not recognized by source detection)
         let peb_path = dir.path().join("template.peb");
         let mut peb_file = File::create(&peb_path)?;
         writeln!(peb_file, "template content")?;
 
-        // Create a .xyz file (also not recognized)
         let xyz_path = dir.path().join("data.xyz");
         let mut xyz_file = File::create(&xyz_path)?;
         writeln!(xyz_file, "data content")?;
 
         let mut cli = create_test_cli(dir.path());
 
-        // Test 1: Without include patterns, non-source files should be excluded
         cli.include = None;
         let entries = process_entries(&cli)?;
         assert!(!entries
@@ -665,21 +608,18 @@ mod tests {
             .iter()
             .any(|e| e.path.extension().and_then(|ext| ext.to_str()) == Some("xyz")));
 
-        // Test 2: With include patterns, should ADD to source detection
         cli.include = Some(vec!["*.peb".to_string()]);
         let entries = process_entries(&cli)?;
 
-        // Should include .peb files PLUS all normal source files
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"peb")); // Additional pattern
-        assert!(extensions.contains(&"rs")); // Normal source file
-        assert!(extensions.contains(&"py")); // Normal source file
-        assert!(extensions.contains(&"md")); // Normal source file
+        assert!(extensions.contains(&"peb"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
-        // Test 3: Multiple include patterns (additive)
         cli.include = Some(vec!["*.peb".to_string(), "*.xyz".to_string()]);
         let entries = process_entries(&cli)?;
 
@@ -687,13 +627,12 @@ mod tests {
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"peb")); // Additional pattern
-        assert!(extensions.contains(&"xyz")); // Additional pattern
-        assert!(extensions.contains(&"rs")); // Normal source file
-        assert!(extensions.contains(&"py")); // Normal source file
-        assert!(extensions.contains(&"md")); // Normal source file
+        assert!(extensions.contains(&"peb"));
+        assert!(extensions.contains(&"xyz"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
-        // Test 4: Include + exclude patterns (union then subtract)
         cli.include = Some(vec!["*.peb".to_string(), "*.xyz".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("*.xyz".to_string())]);
         let entries = process_entries(&cli)?;
@@ -702,11 +641,11 @@ mod tests {
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"peb")); // Additional pattern, not excluded
-        assert!(!extensions.contains(&"xyz")); // Additional pattern, but excluded
-        assert!(extensions.contains(&"rs")); // Normal source file, not excluded
-        assert!(extensions.contains(&"py")); // Normal source file, not excluded
-        assert!(extensions.contains(&"md")); // Normal source file, not excluded
+        assert!(extensions.contains(&"peb"));
+        assert!(!extensions.contains(&"xyz"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
         Ok(())
     }
@@ -715,7 +654,6 @@ mod tests {
     fn test_backward_compatibility_no_patterns() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Add some non-source files that should be ignored by default
         let binary_path = dir.path().join("binary.bin");
         fs::write(&binary_path, b"\x00\x01\x02\x03")?;
 
@@ -724,12 +662,10 @@ mod tests {
 
         let mut cli = create_test_cli(dir.path());
 
-        // Test 1: No patterns specified - should only get source files
         cli.include = None;
         cli.exclude = None;
         let entries = process_entries(&cli)?;
 
-        // Should find source files (.rs, .py, .md) but not .bin or .conf
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
@@ -741,19 +677,17 @@ mod tests {
         assert!(!extensions.contains(&"bin"));
         assert!(!extensions.contains(&"conf"));
 
-        // Test 2: Only exclude patterns - should work as before
         cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
         let entries = process_entries(&cli)?;
 
-        // Should still apply source detection, but exclude .rs files
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
 
-        assert!(!extensions.contains(&"rs")); // Excluded
-        assert!(extensions.contains(&"py")); // Source file, not excluded
-        assert!(!extensions.contains(&"bin")); // Not source file
+        assert!(!extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(!extensions.contains(&"bin"));
 
         Ok(())
     }
@@ -762,23 +696,19 @@ mod tests {
     fn test_single_file_processing_with_patterns() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create a .peb file
         let peb_path = dir.path().join("template.peb");
         fs::write(&peb_path, "template content")?;
 
-        // Test 1: Single .peb file without include patterns - should be rejected
         let mut cli = create_test_cli(&peb_path);
         cli.paths = vec![peb_path.to_string_lossy().to_string()];
         cli.include = None;
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 0);
 
-        // Test 2: Single .peb file WITH include patterns - should be accepted
         cli.include = Some(vec!["*.peb".to_string()]);
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 1);
 
-        // Test 3: Single .rs file with exclude pattern - should be rejected
         let rs_path = dir.path().join("src/main.rs");
         cli.paths = vec![rs_path.to_string_lossy().to_string()];
         cli.include = None;
@@ -793,45 +723,38 @@ mod tests {
     fn test_pattern_edge_cases() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create various test files
         fs::write(dir.path().join("test.peb"), "content")?;
         fs::write(dir.path().join("test.xyz"), "content")?;
         fs::write(dir.path().join("script.py"), "print('test')")?;
 
         let mut cli = create_test_cli(dir.path());
 
-        // Test 1: Empty include patterns (edge case) - should still get source files
         cli.include = Some(vec![]);
         let entries = process_entries(&cli)?;
-        // With empty include patterns, should still get source files
         assert!(!entries.is_empty());
 
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"rs")); // Source files should still be included
+        assert!(extensions.contains(&"rs"));
         assert!(extensions.contains(&"py"));
         assert!(extensions.contains(&"md"));
 
-        // Test 2: Include pattern that matches source files (additive)
         cli.include = Some(vec!["**/*.py".to_string()]);
         let entries = process_entries(&cli)?;
-        // Should include source files + additional .py matches
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(extensions.contains(&"py")); // Both existing and additional
-        assert!(extensions.contains(&"rs")); // Source files
-        assert!(extensions.contains(&"md")); // Source files
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"md"));
 
-        // Test 3: Include everything, then exclude
         cli.include = Some(vec!["**/*".to_string()]);
         cli.exclude = Some(vec![Exclude::Pattern("**/*.rs".to_string())]);
         let entries = process_entries(&cli)?;
 
-        // Should include everything (.peb, .xyz, .py, .md from both source detection and include pattern) but not .rs files
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
@@ -851,19 +774,15 @@ mod tests {
         let (dir, _files) = setup_test_directory()?;
         let mut cli = create_test_cli(dir.path());
 
-        // Test 1: Invalid glob pattern (this should not panic)
         cli.include = Some(vec!["[invalid".to_string()]);
         let _entries = process_entries(&cli)?;
-        // Should handle gracefully, possibly matching nothing
 
-        // Test 2: Mix of valid and invalid patterns
         cli.include = Some(vec![
             "**/*.rs".to_string(),
             "[invalid".to_string(),
             "**/*.py".to_string(),
         ]);
         let _entries = process_entries(&cli)?;
-        // Should process valid patterns, ignore invalid ones
 
         Ok(())
     }
@@ -872,7 +791,6 @@ mod tests {
     fn test_include_patterns_are_additional() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create a .peb file
         fs::write(dir.path().join("template.peb"), "template content")?;
 
         let mut cli = create_test_cli(dir.path());
@@ -880,18 +798,16 @@ mod tests {
 
         let entries = process_entries(&cli)?;
 
-        // Should include BOTH .peb files AND normal source files
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
 
-        assert!(extensions.contains(&"peb")); // Additional pattern
-        assert!(extensions.contains(&"rs")); // Normal source file
-        assert!(extensions.contains(&"py")); // Normal source file
-        assert!(extensions.contains(&"md")); // Normal source file
+        assert!(extensions.contains(&"peb"));
+        assert!(extensions.contains(&"rs"));
+        assert!(extensions.contains(&"py"));
+        assert!(extensions.contains(&"md"));
 
-        // Should be more than just the .peb file
         assert!(entries.len() > 1);
 
         Ok(())
@@ -901,21 +817,18 @@ mod tests {
     fn test_only_include_replacement_behavior() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create various test files including non-source files
         fs::write(dir.path().join("config.conf"), "key=value")?;
         fs::write(dir.path().join("data.toml"), "[section]\nkey = 'value'")?;
         fs::write(dir.path().join("template.peb"), "template content")?;
 
         let mut cli = create_test_cli(dir.path());
 
-        // Test 1: --only-include should ONLY include specified patterns, no other files
         cli.only_include = Some(vec!["*.conf".to_string()]);
         let entries = process_entries(&cli)?;
 
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.extension().and_then(|ext| ext.to_str()) == Some("conf"));
 
-        // Verify no other files are included
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
@@ -925,7 +838,6 @@ mod tests {
         assert!(!extensions.contains(&"md"));
         assert!(!extensions.contains(&"toml"));
 
-        // Test 2: Multiple patterns in --only-include
         cli.only_include = Some(vec!["*.conf".to_string(), "*.toml".to_string()]);
         let entries = process_entries(&cli)?;
 
@@ -936,10 +848,9 @@ mod tests {
             .collect();
         assert!(extensions.contains(&"conf"));
         assert!(extensions.contains(&"toml"));
-        assert!(!extensions.contains(&"rs")); // No other files
+        assert!(!extensions.contains(&"rs"));
         assert!(!extensions.contains(&"py"));
 
-        // Test 3: --only-include with exclude patterns
         cli.only_include = Some(vec![
             "*.conf".to_string(),
             "*.toml".to_string(),
@@ -948,22 +859,21 @@ mod tests {
         cli.exclude = Some(vec![Exclude::Pattern("*.toml".to_string())]);
         let entries = process_entries(&cli)?;
 
-        assert_eq!(entries.len(), 2); // conf and peb, but not toml (excluded)
+        assert_eq!(entries.len(), 2);
         let extensions: Vec<_> = entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
         assert!(extensions.contains(&"conf"));
         assert!(extensions.contains(&"peb"));
-        assert!(!extensions.contains(&"toml")); // Excluded
-        assert!(!extensions.contains(&"rs")); // No other files
+        assert!(!extensions.contains(&"toml"));
+        assert!(!extensions.contains(&"rs"));
 
-        // Test 4: --only-include with pattern that matches nothing
         cli.only_include = Some(vec!["*.nonexistent".to_string()]);
         cli.exclude = None;
         let entries = process_entries(&cli)?;
 
-        assert_eq!(entries.len(), 0); // Should match nothing
+        assert_eq!(entries.len(), 0);
 
         Ok(())
     }
@@ -972,32 +882,27 @@ mod tests {
     fn test_only_include_vs_include_behavior_difference() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create a non-source file
         fs::write(dir.path().join("config.conf"), "key=value")?;
 
         let mut cli = create_test_cli(dir.path());
 
-        // Test additive behavior with --include
         cli.include = Some(vec!["*.conf".to_string()]);
         cli.only_include = None;
         let additive_entries = process_entries(&cli)?;
 
-        // Should include conf + source files
         let additive_extensions: Vec<_> = additive_entries
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(additive_extensions.contains(&"conf")); // Additional pattern
-        assert!(additive_extensions.contains(&"rs")); // Source files
-        assert!(additive_extensions.contains(&"py")); // Source files
-        assert!(additive_extensions.contains(&"md")); // Source files
+        assert!(additive_extensions.contains(&"conf"));
+        assert!(additive_extensions.contains(&"rs"));
+        assert!(additive_extensions.contains(&"py"));
+        assert!(additive_extensions.contains(&"md"));
 
-        // Test replacement behavior with --only-include
         cli.include = None;
         cli.only_include = Some(vec!["*.conf".to_string()]);
         let replacement_entries = process_entries(&cli)?;
 
-        // Should include ONLY conf files
         assert_eq!(replacement_entries.len(), 1);
         assert!(
             replacement_entries[0]
@@ -1011,12 +916,11 @@ mod tests {
             .iter()
             .filter_map(|e| e.path.extension().and_then(|ext| ext.to_str()))
             .collect();
-        assert!(replacement_extensions.contains(&"conf")); // Only pattern
-        assert!(!replacement_extensions.contains(&"rs")); // No source files
-        assert!(!replacement_extensions.contains(&"py")); // No source files
-        assert!(!replacement_extensions.contains(&"md")); // No source files
+        assert!(replacement_extensions.contains(&"conf"));
+        assert!(!replacement_extensions.contains(&"rs"));
+        assert!(!replacement_extensions.contains(&"py"));
+        assert!(!replacement_extensions.contains(&"md"));
 
-        // Verify the counts are different
         assert!(additive_entries.len() > replacement_entries.len());
 
         Ok(())
@@ -1026,32 +930,27 @@ mod tests {
     fn test_only_include_single_file_processing() -> Result<()> {
         let (dir, _files) = setup_test_directory()?;
 
-        // Create and test single file processing with a truly non-source file
         let config_path = dir.path().join("config.conf");
         fs::write(&config_path, "key=value")?;
 
         let mut cli = create_test_cli(&config_path);
         cli.paths = vec![config_path.to_string_lossy().to_string()];
 
-        // Test 1: Single non-source file without --only-include should be rejected
         cli.only_include = None;
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 0);
 
-        // Test 2: Single non-source file WITH --only-include should be accepted
         cli.only_include = Some(vec!["*.conf".to_string()]);
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 1);
         assert!(entries[0].path.extension().and_then(|ext| ext.to_str()) == Some("conf"));
 
-        // Test 3: Single source file WITH --only-include that doesn't match should be rejected
         let rs_path = dir.path().join("src/main.rs");
         cli.paths = vec![rs_path.to_string_lossy().to_string()];
         cli.only_include = Some(vec!["*.conf".to_string()]);
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 0);
 
-        // Test 4: Single source file WITH --only-include that matches should be accepted
         cli.only_include = Some(vec!["*.rs".to_string()]);
         let entries = process_entries(&cli)?;
         assert_eq!(entries.len(), 1);

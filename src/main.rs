@@ -1,23 +1,30 @@
 mod analyzer;
 mod cli;
-mod config;
-mod file_picker;
-mod git_processor;
 mod output;
-mod source_detection;
-mod tokenizer;
-mod url_processor;
 
-use crate::analyzer::process_directory;
-use crate::cli::Cli;
-use crate::config::{
-    get_config_path, load_config, load_repo_config, save_config, save_repo_config, RepoConfig,
-};
-use crate::git_processor::GitProcessor;
-use crate::url_processor::UrlProcessor;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
+use tracing::debug;
+use tracing_subscriber::EnvFilter;
+
+use crate::analyzer::process_directory;
+use crate::cli::{Cli, CodeArgs, Commands, FunctionTarget, IndexCommand};
+use glimpse::code::extract::Extractor;
+use glimpse::code::graph::CallGraph;
+use glimpse::code::index::{
+    clear_index, file_fingerprint, load_index, save_index, FileRecord, Index,
+};
+use glimpse::code::lsp::LspResolver;
+use glimpse::fetch::{GitProcessor, UrlProcessor};
+use glimpse::{
+    get_config_path, is_source_file, load_config, load_repo_config, save_config, save_repo_config,
+    RepoConfig,
+};
 
 fn is_url_or_git(path: &str) -> bool {
     GitProcessor::is_git_url(path) || path.starts_with("http://") || path.starts_with("https://")
@@ -34,9 +41,24 @@ fn has_custom_options(args: &Cli) -> bool {
         || args.no_ignore
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
+
     let mut config = load_config()?;
     let mut args = Cli::parse_with_config(&config)?;
+
+    debug!("config loaded, args parsed");
+
+    if let Some(ref cmd) = args.command {
+        return match cmd {
+            Commands::Code(code_args) => handle_code_command(code_args),
+            Commands::Index(index_args) => handle_index_command(&index_args.command),
+        };
+    }
 
     if args.config_path {
         let path = get_config_path()?;
@@ -62,7 +84,6 @@ fn main() -> anyhow::Result<()> {
             save_repo_config(&glimpse_file, &repo_config)?;
             println!("Configuration saved to {}", glimpse_file.display());
 
-            // If the user explicitly saved a config, remove this directory from the skipped list
             if let Ok(canonical_root) = std::fs::canonicalize(&root_dir) {
                 let root_str = canonical_root.to_string_lossy().to_string();
                 if let Some(pos) = config
@@ -79,7 +100,6 @@ fn main() -> anyhow::Result<()> {
             let repo_config = load_repo_config(&glimpse_file)?;
             apply_repo_config(&mut args, &repo_config);
         } else if has_custom_options(&args) {
-            // Determine canonical root directory path for consistent tracking
             let canonical_root = std::fs::canonicalize(&root_dir).unwrap_or(root_dir.clone());
             let root_str = canonical_root.to_string_lossy().to_string();
 
@@ -96,7 +116,6 @@ fn main() -> anyhow::Result<()> {
                     save_repo_config(&glimpse_file, &repo_config)?;
                     println!("Configuration saved to {}", glimpse_file.display());
 
-                    // In case it was previously skipped, remove from skipped list
                     if let Some(pos) = config
                         .skipped_prompt_repos
                         .iter()
@@ -106,7 +125,6 @@ fn main() -> anyhow::Result<()> {
                         save_config(&config)?;
                     }
                 } else {
-                    // Record that user declined for this project
                     config.skipped_prompt_repos.push(root_str);
                     save_config(&config)?;
                 }
@@ -139,15 +157,12 @@ fn main() -> anyhow::Result<()> {
             }
 
             let process_args = if subpaths.is_empty() {
-                // No subpaths specified, process the whole repo
                 args.with_path(repo_path.to_str().unwrap())
             } else {
-                // Process only the specified subpaths inside the repo
                 let mut new_args = args.clone();
                 new_args.paths = subpaths
                     .iter()
                     .map(|sub| {
-                        // Join with repo_path
                         let mut joined = std::path::PathBuf::from(&repo_path);
                         joined.push(sub);
                         joined.to_string_lossy().to_string()
@@ -170,7 +185,6 @@ fn main() -> anyhow::Result<()> {
             } else if args.print {
                 println!("{content}");
             } else {
-                // Default behavior for URLs if no -f or --print: copy to clipboard
                 match arboard::Clipboard::new()
                     .and_then(|mut clipboard| clipboard.set_text(content))
                 {
@@ -196,14 +210,12 @@ fn find_containing_dir_with_glimpse(path: &Path) -> anyhow::Result<PathBuf> {
         path.to_path_buf()
     };
 
-    // Try to find a .glimpse file or go up until we reach the root
     loop {
         if current.join(".glimpse").exists() {
             return Ok(current);
         }
 
         if !current.pop() {
-            // If we can't go up anymore, just use the original path
             return Ok(if path.is_file() {
                 path.parent().unwrap_or(Path::new(".")).to_path_buf()
             } else {
@@ -214,14 +226,12 @@ fn find_containing_dir_with_glimpse(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn create_repo_config_from_args(args: &Cli) -> RepoConfig {
-    use crate::config::BackwardsCompatOutputFormat;
-
     RepoConfig {
         include: args.include.clone(),
         exclude: args.exclude.clone(),
         max_size: args.max_size,
         max_depth: args.max_depth,
-        output: args.output.clone().map(BackwardsCompatOutputFormat::from),
+        output: args.get_output_format(),
         file: args.file.clone(),
         hidden: Some(args.hidden),
         no_ignore: Some(args.no_ignore),
@@ -246,7 +256,7 @@ fn apply_repo_config(args: &mut Cli, repo_config: &RepoConfig) {
     }
 
     if let Some(ref output) = repo_config.output {
-        args.output = Some((*output).clone().into());
+        args.output = Some(output.clone().into());
     }
 
     if let Some(ref file) = repo_config.file {
@@ -260,4 +270,377 @@ fn apply_repo_config(args: &mut Cli, repo_config: &RepoConfig) {
     if let Some(no_ignore) = repo_config.no_ignore {
         args.no_ignore = no_ignore;
     }
+}
+
+fn handle_code_command(args: &CodeArgs) -> Result<()> {
+    let root = args
+        .root
+        .canonicalize()
+        .unwrap_or_else(|_| args.root.clone());
+    let target = FunctionTarget::parse(&args.target)?;
+
+    let mut index = load_index(&root)?.unwrap_or_else(Index::new);
+    let needs_update = index_directory(&root, &mut index, args.hidden, args.no_ignore)?;
+    let mut needs_save = needs_update > 0;
+
+    // Only run LSP resolution if:
+    // 1. --precise is requested
+    // 2. Either files were updated OR no calls have been resolved yet (first --precise run)
+    let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+    if args.precise && (needs_update > 0 || !has_any_resolved) {
+        let resolved = resolve_calls_with_lsp(&root, &mut index)?;
+        if resolved > 0 {
+            needs_save = true;
+        }
+    }
+
+    if needs_save {
+        save_index(&index, &root)?;
+    }
+
+    // After LSP resolution, use build_with_options which checks call.resolved first
+    // This avoids creating another LSP resolver and re-trying failed calls
+    let graph = CallGraph::build_with_options(&index, args.strict);
+
+    let node_id = if let Some(ref file) = target.file {
+        let file_path = root.join(file);
+        let rel_path = file_path
+            .strip_prefix(&root)
+            .unwrap_or(&file_path)
+            .to_path_buf();
+        graph
+            .find_node_by_file_and_name(&rel_path, &target.function)
+            .or_else(|| graph.find_node_by_file_and_name(&file_path, &target.function))
+    } else {
+        graph.find_node(&target.function)
+    };
+
+    let Some(node_id) = node_id else {
+        bail!("function '{}' not found in index", target.function);
+    };
+
+    let depth = args.depth.unwrap_or(1);
+
+    let definitions = if args.callers {
+        graph
+            .get_callers_to_depth(node_id, depth)
+            .into_iter()
+            .filter_map(|id| graph.get_node(id).map(|n| &n.definition))
+            .collect()
+    } else {
+        graph.definitions_to_depth(node_id, depth)
+    };
+
+    let output = format_definitions(&definitions, &root)?;
+
+    if let Some(ref file) = args.file {
+        fs::write(file, &output)?;
+        eprintln!("Output written to: {}", file.display());
+    } else {
+        print!("{}", output);
+    }
+
+    Ok(())
+}
+
+fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
+    match cmd {
+        IndexCommand::Build {
+            path,
+            force,
+            precise,
+            hidden,
+            no_ignore,
+        } => {
+            let root = path.canonicalize().unwrap_or_else(|_| path.clone());
+
+            let mut index = if *force {
+                Index::new()
+            } else {
+                load_index(&root)?.unwrap_or_else(Index::new)
+            };
+
+            let updated = index_directory(&root, &mut index, *hidden, *no_ignore)?;
+
+            // Only run LSP resolution if files were updated or no calls resolved yet
+            let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+            if *precise && (updated > 0 || !has_any_resolved) {
+                let resolved = resolve_calls_with_lsp(&root, &mut index)?;
+                if resolved > 0 {
+                    eprintln!("Resolved {} calls with LSP", resolved);
+                }
+            }
+
+            save_index(&index, &root)?;
+
+            let file_count = index.files.len();
+            let def_count = index.definitions().count();
+            let call_count = index.calls().count();
+            let resolved_count = index.calls().filter(|c| c.resolved.is_some()).count();
+
+            if updated > 0 || *precise {
+                eprintln!(
+                    "Index updated: {} files ({} updated), {} definitions, {} calls ({} resolved)",
+                    file_count, updated, def_count, call_count, resolved_count
+                );
+            } else {
+                eprintln!(
+                    "Index up to date: {} files, {} definitions, {} calls ({} resolved)",
+                    file_count, def_count, call_count, resolved_count
+                );
+            }
+        }
+        IndexCommand::Clear { path } => {
+            let root = path.canonicalize().unwrap_or_else(|_| path.clone());
+            clear_index(&root)?;
+            eprintln!("Index cleared for: {}", root.display());
+        }
+        IndexCommand::Status { path } => {
+            let root = path.canonicalize().unwrap_or_else(|_| path.clone());
+
+            match load_index(&root)? {
+                Some(index) => {
+                    let file_count = index.files.len();
+                    let def_count = index.definitions().count();
+                    let call_count = index.calls().count();
+                    let import_count = index.imports().count();
+
+                    println!("Index status for: {}", root.display());
+                    println!("  Files:       {}", file_count);
+                    println!("  Definitions: {}", def_count);
+                    println!("  Calls:       {}", call_count);
+                    println!("  Imports:     {}", import_count);
+                }
+                None => {
+                    println!("No index found for: {}", root.display());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const INDEX_CHUNK_SIZE: usize = 256;
+
+fn index_directory(root: &Path, index: &mut Index, hidden: bool, no_ignore: bool) -> Result<usize> {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .expect("valid template"),
+    );
+    pb.set_message("scanning files...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let source_files: Vec<_> = ignore::WalkBuilder::new(root)
+        .hidden(!hidden)
+        .git_ignore(!no_ignore)
+        .ignore(!no_ignore)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|e| is_source_file(e.path()))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| !ext.is_empty())
+        })
+        .collect();
+
+    pb.set_message(format!(
+        "found {} source files, checking for changes...",
+        source_files.len()
+    ));
+
+    let stale_files: Vec<_> = source_files
+        .into_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let rel_path = path.strip_prefix(root).unwrap_or(path);
+            let ext = path.extension().and_then(|e| e.to_str())?;
+            if ext.is_empty() {
+                return None;
+            }
+            let (mtime, size) = file_fingerprint(path).ok()?;
+            if index.is_stale(rel_path, mtime, size) {
+                Some((
+                    path.to_path_buf(),
+                    rel_path.to_path_buf(),
+                    ext.to_string(),
+                    mtime,
+                    size,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    pb.finish_and_clear();
+
+    let total = stale_files.len();
+    if total == 0 {
+        return Ok(0);
+    }
+
+    let pb = ProgressBar::new(total as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .expect("valid template")
+            .progress_chars("#>-"),
+    );
+    pb.set_message("indexing...");
+
+    let mut updated = 0;
+
+    for chunk in stale_files.chunks(INDEX_CHUNK_SIZE) {
+        let records: Vec<FileRecord> = chunk
+            .par_iter()
+            .filter_map(|(path, rel_path, ext, mtime, size)| {
+                let extractor = match Extractor::from_extension(ext) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        debug!(ext = %ext, error = ?e, "no extractor for extension");
+                        return None;
+                    }
+                };
+                let source = fs::read(path).ok()?;
+
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(extractor.language()).ok()?;
+                let tree = parser.parse(&source, None)?;
+
+                let definitions = extractor.extract_definitions(&tree, &source, rel_path);
+                let calls = extractor.extract_calls(&tree, &source, rel_path);
+                let imports = extractor.extract_imports(&tree, &source, rel_path);
+
+                pb.inc(1);
+
+                Some(FileRecord {
+                    path: rel_path.to_path_buf(),
+                    mtime: *mtime,
+                    size: *size,
+                    definitions,
+                    calls,
+                    imports,
+                })
+            })
+            .collect();
+
+        updated += records.len();
+        for record in records {
+            index.update(record);
+        }
+    }
+
+    pb.finish_and_clear();
+    Ok(updated)
+}
+
+fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
+    let unresolved_count: usize = index
+        .files
+        .values()
+        .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+        .sum();
+
+    if unresolved_count == 0 {
+        return Ok(0);
+    }
+
+    let pb = ProgressBar::new(unresolved_count as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .expect("valid template")
+            .progress_chars("#>-"),
+    );
+    pb.set_message("resolving calls with LSP...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let mut lsp_resolver = LspResolver::with_progress(root, pb.clone());
+    let mut resolved = 0;
+
+    let file_paths: Vec<_> = index.files.keys().cloned().collect();
+
+    for file_path in file_paths {
+        let Some(record) = index.files.get(&file_path) else {
+            continue;
+        };
+
+        let calls_to_resolve: Vec<_> = record
+            .calls
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.resolved.is_none())
+            .map(|(i, c)| (i, c.clone()))
+            .collect();
+
+        if calls_to_resolve.is_empty() {
+            continue;
+        }
+
+        let mut resolutions = Vec::new();
+
+        for (call_idx, call) in &calls_to_resolve {
+            pb.inc(1);
+
+            if let Some(resolved_call) = lsp_resolver.resolve_call_full(call, index) {
+                resolutions.push((*call_idx, resolved_call));
+            }
+        }
+
+        if let Some(record) = index.files.get_mut(&file_path) {
+            for (call_idx, resolved_call) in resolutions {
+                if call_idx < record.calls.len() {
+                    record.calls[call_idx].resolved = Some(resolved_call);
+                    resolved += 1;
+                }
+            }
+        }
+    }
+
+    pb.finish_and_clear();
+
+    let stats = lsp_resolver.stats();
+    if stats.by_server.is_empty() {
+        eprintln!("LSP: no servers responded (check if LSP binaries are working)");
+    } else {
+        eprintln!("LSP: {}", stats);
+    }
+
+    Ok(resolved)
+}
+
+fn format_definitions(
+    definitions: &[&glimpse::code::index::Definition],
+    root: &Path,
+) -> Result<String> {
+    use std::fmt::Write;
+
+    let mut output = String::new();
+
+    for def in definitions {
+        let file_path = root.join(&def.file);
+        let content = fs::read_to_string(&file_path)
+            .with_context(|| format!("failed to read: {}", file_path.display()))?;
+
+        let lines: Vec<&str> = content.lines().collect();
+        let start = def.span.start_line.saturating_sub(1);
+        let end = def.span.end_line.min(lines.len());
+
+        writeln!(output, "## {}:{}", def.file.display(), def.name)?;
+        writeln!(output)?;
+        writeln!(output, "```")?;
+        for line in &lines[start..end] {
+            writeln!(output, "{}", line)?;
+        }
+        writeln!(output, "```")?;
+        writeln!(output)?;
+    }
+
+    Ok(output)
 }

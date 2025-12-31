@@ -1,7 +1,10 @@
-use anyhow::{anyhow, Result};
 use std::path::PathBuf;
+
+use anyhow::{anyhow, Result};
 use tiktoken_rs::get_bpe_from_model;
 use tokenizers::Tokenizer as HfTokenizer;
+
+use super::types::FileEntry;
 
 pub enum TokenizerBackend {
     Tiktoken(tiktoken_rs::CoreBPE),
@@ -10,7 +13,7 @@ pub enum TokenizerBackend {
 
 pub struct TokenCount {
     pub total_tokens: usize,
-    pub breakdown: Vec<(PathBuf, usize)>, // (file_path, token_count)
+    pub breakdown: Vec<(PathBuf, usize)>,
 }
 
 pub struct TokenCounter {
@@ -57,10 +60,7 @@ impl TokenCounter {
 
     pub fn count_tokens(&self, text: &str) -> Result<usize> {
         match &self.backend {
-            TokenizerBackend::Tiktoken(bpe) => {
-                // tiktoken's encode_with_special_tokens is infallible
-                Ok(bpe.encode_with_special_tokens(text).len())
-            }
+            TokenizerBackend::Tiktoken(bpe) => Ok(bpe.encode_with_special_tokens(text).len()),
             TokenizerBackend::HuggingFace(tokenizer) => tokenizer
                 .encode(text, false)
                 .map_err(|e| anyhow!("Failed to encode text with HuggingFace tokenizer: {}", e))
@@ -68,7 +68,7 @@ impl TokenCounter {
         }
     }
 
-    pub fn count_files(&self, entries: &[super::output::FileEntry]) -> Result<TokenCount> {
+    pub fn count_files(&self, entries: &[FileEntry]) -> Result<TokenCount> {
         let mut total_tokens = 0;
         let mut breakdown = Vec::new();
 

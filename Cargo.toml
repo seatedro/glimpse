@@ -2,38 +2,62 @@
 name = "glimpse"
 version = "0.7.8"
 edition = "2021"
-description = "A blazingly fast tool for peeking at codebases. Perfect for loading your codebase into an LLM's context."
 license = "MIT"
-build = "build.rs"
+description = "A blazingly fast tool for peeking at codebases"
+
+[[bin]]
+name = "glimpse"
+path = "src/main.rs"
+
+[lib]
+name = "glimpse"
+path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0.95"
 arboard = { version = "3.4.1", features = ["wayland-data-control"] }
 base64 = "0.22.1"
+bincode = "1.3"
+cc = "1.2"
 clap = { version = "4.5.23", features = ["derive"] }
-colored = "2.2.0"
 crossterm = "0.28.1"
 dirs = "5.0.1"
-globset = "0.4.15"
+git2 = "0.18"
+glob = "0.3"
+grep = "0.4"
 ignore = "0.4.23"
 indicatif = "0.17.9"
+libloading = "0.8"
+num-format = "0.4.4"
 once_cell = "1.20.2"
 printpdf = "0.7.0"
 ratatui = "0.29.0"
 rayon = "1.10.0"
+regex = "1.11"
+reqwest = { version = "0.11", features = ["blocking"] }
+scraper = "0.18"
 serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0"
 tempfile = "3.14.0"
 tiktoken-rs = "0.6.0"
 tokenizers = { version = "0.21.0", features = ["http"] }
 toml = "0.8.19"
-walkdir = "2.5.0"
-reqwest = { version = "0.11", features = ["blocking"] }
-scraper = "0.18"
+tree-sitter = "0.25"
 url = "2.5"
-git2 = "0.18"
-mockito = "1.4"
-num-format = { version = "0.4.4" }
+walkdir = "2.5.0"
+lsp-types = "0.97"
+which = "8.0"
+flate2 = "1.0"
+zip = "2.2"
+tar = "0.4"
+xz2 = "0.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }
-serde_yaml = "0.9.34"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+tempfile = "3.14.0"
+mockito = "1.4"

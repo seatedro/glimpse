@@ -1,1 +1,5 @@
 /target
+.direnv
+
+test/
+.todo.md

@@ -71,10 +71,11 @@
           buildInputs =
             with pkgs;
             [
-              rust-bin.stable.latest.default
+              rust-bin.nightly.latest.default
               pkg-config
               openssl
               cacert
+              tree-sitter
             ]
             ++ lib.optionals stdenv.isDarwin [
               darwin.apple_sdk.frameworks.Security
