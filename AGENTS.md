@@ -385,20 +385,49 @@ cargo run -- code path/to/file.ml:function_name --callers -d 2
 - **Nested structures**: Languages with currying or chaining need multiple patterns
 - **External scanner**: Some grammars have custom scanners in `src/scanner.c`
 
-### LSP Configuration Options
+### LSP Configuration
+
+#### Finding Download URLs
+
+1. Check the LSP's GitHub releases page for pre-built binaries
+2. Use the GitHub API to get exact asset names:
+   ```bash
+   curl -s https://api.github.com/repos/OWNER/REPO/releases/latest | jq '.assets[].name'
+   ```
+3. Identify the URL pattern and platform-specific target names
+
+#### Install Methods (in priority order)
+
+| Method | Config Field | Requirement | Example |
+|--------|--------------|-------------|---------|
+| URL download | `url_template` | None | rust-analyzer, lua-language-server |
+| npm | `npm_package` | npm or bun | pyright, typescript-language-server |
+| go | `go_package` | go toolchain | gopls |
+| cargo | `cargo_crate` | cargo | nil |
+
+If no install method is configured, users must install the LSP manually.
+
+#### Configuration Options
 
 ```toml
 [language.lsp]
 binary = "lsp-server"           # executable name
 args = ["--stdio"]              # CLI arguments
-npm_package = "pkg-name"        # install via npm
-go_package = "pkg/path@latest"  # install via go
-version = "1.0.0"               # for URL-based downloads
-url_template = "https://..."    # download URL pattern
-archive = "zip"                 # or "tar.gz", "gz"
-binary_path = "bin/server"      # path within archive
 
-[language.lsp.targets]          # platform-specific target names
+# URL-based download (preferred when binaries available)
+version = "1.0.0"
+url_template = "https://github.com/org/repo/releases/download/{version}/lsp-{version}-{target}.tar.gz"
+archive = "tar.gz"              # or "zip", "gz", "tar.xz"
+binary_path = "bin/server"      # path within archive (optional)
+
+# Package manager installs (fallback when no binaries)
+npm_package = "pkg-name"        # install via npm/bun
+go_package = "pkg/path@latest"  # install via go
+cargo_crate = "crate-name"      # install via cargo
+
+[language.lsp.targets]          # map rust target triple to release asset name
 "x86_64-unknown-linux-gnu" = "linux-x64"
+"aarch64-unknown-linux-gnu" = "linux-arm64"
+"x86_64-apple-darwin" = "darwin-x64"
 "aarch64-apple-darwin" = "darwin-arm64"
 ```

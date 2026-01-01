@@ -150,17 +150,30 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     };
 
     let target = current_target();
-    let Some(target_name) = lsp.targets.get(target) else {
-        bail!(
-            "no pre-built binary available for {} on {}",
-            lsp.binary,
-            target
-        );
-    };
 
-    let url = url_template
-        .replace("{version}", &version)
-        .replace("{target}", target_name);
+    let url = if let Some(ref latest_txt_url) = lsp.latest_txt_url {
+        let latest_url = latest_txt_url.replace("{version}", &version);
+        let filename = reqwest::blocking::get(&latest_url)
+            .with_context(|| format!("failed to fetch {}", latest_url))?
+            .text()
+            .with_context(|| "failed to read latest.txt")?
+            .trim()
+            .to_string();
+        url_template
+            .replace("{version}", &version)
+            .replace("{filename}", &filename)
+    } else {
+        let Some(target_name) = lsp.targets.get(target) else {
+            bail!(
+                "no pre-built binary available for {} on {}",
+                lsp.binary,
+                target
+            );
+        };
+        url_template
+            .replace("{version}", &version)
+            .replace("{target}", target_name)
+    };
 
     let dir = lsp_dir();
     fs::create_dir_all(&dir)?;
@@ -226,6 +239,53 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
 
             if !found {
                 bail!("binary {} not found in tar.xz archive", binary_name);
+            }
+        }
+        "tar.gz" => {
+            let decoder = flate2::read::GzDecoder::new(&bytes[..]);
+            let mut archive = tar::Archive::new(decoder);
+
+            if let Some(ref binary_path_template) = lsp.binary_path {
+                let binary_path = if let Some(ref v) = lsp.version {
+                    binary_path_template.replace("{version}", v)
+                } else {
+                    binary_path_template.clone()
+                };
+
+                let extract_dir = lsp_dir().join(format!("{}-extract", lsp.binary));
+                fs::create_dir_all(&extract_dir)?;
+                archive.unpack(&extract_dir)?;
+
+                let full_binary_path = extract_dir.join(&binary_path);
+                if full_binary_path.exists() {
+                    fs::copy(&full_binary_path, &final_path)?;
+                } else {
+                    bail!(
+                        "binary {} not found at {} in tar.gz archive",
+                        lsp.binary,
+                        binary_path
+                    );
+                }
+            } else {
+                let binary_name = format!("{}{}", lsp.binary, binary_extension());
+                let mut found = false;
+
+                for entry in archive.entries()? {
+                    let mut entry = entry?;
+                    let path = entry.path()?;
+                    if let Some(name) = path.file_name() {
+                        if name == binary_name.as_str() {
+                            let mut output = File::create(&final_path)?;
+                            std::io::copy(&mut entry, &mut output)?;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !found {
+                    bail!("binary {} not found in tar.gz archive", binary_name);
+                }
             }
         }
         "zip" => {
@@ -428,6 +488,42 @@ fn install_cargo_crate(lsp: &LspConfig) -> Result<PathBuf> {
     );
 }
 
+fn install_coursier_package(lsp: &LspConfig) -> Result<PathBuf> {
+    let Some(ref package) = lsp.coursier_package else {
+        bail!("no coursier package configured for {}", lsp.binary);
+    };
+
+    let cs_path =
+        which::which("cs").context("coursier (cs) not found. Install Coursier or install the LSP manually")?;
+
+    let install_dir = lsp_dir();
+    fs::create_dir_all(&install_dir)?;
+
+    let status = Command::new(&cs_path)
+        .args(["install", "--install-dir"])
+        .arg(&install_dir)
+        .arg(package)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to run cs install")?;
+
+    if !status.success() {
+        bail!("cs install failed for {}", package);
+    }
+
+    let binary_path = install_dir.join(&lsp.binary);
+    if binary_path.exists() {
+        return Ok(binary_path);
+    }
+
+    bail!(
+        "cs install succeeded but binary {} not found at {}",
+        lsp.binary,
+        binary_path.display()
+    );
+}
+
 fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let local_path = lsp_binary_path(lsp);
     if local_path.exists() {
@@ -456,6 +552,10 @@ fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
 
     if lsp.cargo_crate.is_some() {
         return install_cargo_crate(lsp);
+    }
+
+    if lsp.coursier_package.is_some() {
+        return install_coursier_package(lsp);
     }
 
     bail!(
@@ -765,6 +865,9 @@ pub fn check_lsp_availability() -> HashMap<String, LspAvailability> {
             } else if lsp.cargo_crate.is_some() {
                 let cargo_available = which::which("cargo").is_ok();
                 (cargo_available, Some("cargo".to_string()))
+            } else if lsp.coursier_package.is_some() {
+                let cs_available = which::which("cs").is_ok();
+                (cs_available, Some("coursier".to_string()))
             } else {
                 (false, None)
             };
@@ -1660,6 +1763,8 @@ mod tests {
             npm_package: None,
             go_package: None,
             cargo_crate: None,
+            coursier_package: None,
+            latest_txt_url: None,
         };
 
         let path = lsp_binary_path(&lsp);

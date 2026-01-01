@@ -588,7 +588,12 @@ import_query = """
 
 [language.lsp]
 binary = "jdtls"
-args = []
+args = ["-data", "/tmp/jdtls-workspace"]
+version = "1.54.0"
+url_template = "https://download.eclipse.org/jdtls/milestones/{version}/{filename}"
+latest_txt_url = "https://download.eclipse.org/jdtls/milestones/{version}/latest.txt"
+archive = "tar.gz"
+binary_path = "bin/jdtls"
 
 [[language]]
 name = "scala"
@@ -655,6 +660,7 @@ import_query = """
 [language.lsp]
 binary = "metals"
 args = []
+coursier_package = "metals"
 
 [[language]]
 name = "nix"
