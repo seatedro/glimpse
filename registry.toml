@@ -655,3 +655,59 @@ import_query = """
 [language.lsp]
 binary = "metals"
 args = []
+
+[[language]]
+name = "nix"
+extensions = ["nix"]
+repo = "https://github.com/nix-community/tree-sitter-nix"
+branch = "master"
+symbol = "tree_sitter_nix"
+color = "#7e7eff"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (binding
+    attrpath: (attrpath
+      attr: (identifier) @name)
+    expression: (function_expression
+      body: (_) @body)) @function.definition
+)
+"""
+call_query = """
+(apply_expression
+  function: [
+    (variable_expression
+      name: (identifier) @name)
+    (select_expression
+      expression: (_) @qualifier
+      attrpath: (attrpath
+        attr: (identifier) @name))
+    (apply_expression
+      function: (variable_expression
+        name: (identifier) @name))
+  ]) @reference.call
+"""
+import_query = """
+(apply_expression
+  function: (variable_expression
+    name: (identifier) @_import)
+  argument: [
+    (path_expression) @path
+    (spath_expression) @path
+    (string_expression) @path
+    (variable_expression
+      name: (identifier) @path)
+  ]
+  (#eq? @_import "import")) @import
+
+(apply_expression
+  function: (select_expression
+    attrpath: (attrpath
+      attr: (identifier) @_fetch))
+  (#match? @_fetch "^fetch.*")) @import
+"""
+
+[language.lsp]
+binary = "nil"
+args = []

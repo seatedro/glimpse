@@ -176,3 +176,229 @@ pub struct FileEntry {
 - `clone()` when borrowing works
 - `Box<dyn Error>` (use `anyhow::Error`)
 - Panicking in library code
+
+## Adding New Language Support
+
+To add support for a new programming language, you need to:
+1. Find the tree-sitter grammar repository
+2. Add the language configuration to `registry.toml`
+3. Write and test tree-sitter queries
+4. Verify the language exists in `languages.yml` (for file detection)
+
+### Step 1: Find the Tree-Sitter Grammar
+
+Check the [tree-sitter wiki](https://github.com/tree-sitter/tree-sitter/wiki/List-of-parsers) for available parsers. Look for:
+- Official parsers under `tree-sitter/` org
+- Community parsers under `tree-sitter-grammars/` org
+- Language-specific orgs (e.g., `nix-community/tree-sitter-nix`)
+
+Clone the grammar repo to examine its structure:
+
+```bash
+# Using repo-explorer or manually
+git clone https://github.com/<org>/tree-sitter-<lang>
+```
+
+Key files to examine:
+- `grammar.js` - the grammar definition
+- `src/node-types.json` - all node types in the AST
+- `queries/tags.scm` - existing tag queries (if any)
+- `queries/highlights.scm` - syntax highlighting queries (helpful reference)
+
+### Step 2: Add to registry.toml
+
+Add a new `[[language]]` section to `registry.toml`:
+
+```toml
+[[language]]
+name = "mylang"
+extensions = ["ml", "mli"]
+repo = "https://github.com/org/tree-sitter-mylang"
+branch = "master"
+symbol = "tree_sitter_mylang"  # C symbol name from bindings
+color = "#HEXCOLOR"            # from languages.yml
+
+definition_query = """
+# Query for function/method definitions
+"""
+
+call_query = """
+# Query for function calls
+"""
+
+import_query = """
+# Query for imports/includes
+"""
+
+[language.lsp]
+binary = "mylang-lsp"
+args = []
+```
+
+### Step 3: Write Tree-Sitter Queries
+
+Queries use S-expression syntax. Key captures:
+- `@name` - the function/symbol name (required)
+- `@body` - the function body
+- `@doc` - documentation comments
+- `@qualifier` - object/module for qualified calls (e.g., `obj` in `obj.method()`)
+- `@path` - import path
+- `@function.definition` / `@reference.call` / `@import` - node type markers
+
+#### Definition Query Pattern
+
+```scheme
+(
+  (comment)* @doc
+  .
+  (function_definition
+    name: (identifier) @name
+    body: (_) @body) @function.definition
+)
+```
+
+#### Call Query Pattern
+
+```scheme
+(call_expression
+  function: [
+    (identifier) @name
+    (member_expression
+      object: (_) @qualifier
+      property: (identifier) @name)
+  ]) @reference.call
+```
+
+#### Import Query Pattern
+
+```scheme
+(import_statement
+  source: (string) @path) @import
+```
+
+### Step 4: Test Queries
+
+**Always test queries before committing.** Use the tree-sitter CLI:
+
+```bash
+# Install tree-sitter CLI if needed
+nix-shell -p tree-sitter nodejs python3
+
+# Navigate to the grammar repo
+cd /path/to/tree-sitter-mylang
+
+# Generate the parser (if needed)
+tree-sitter generate
+
+# Write your query to a .scm file
+cat > queries/test-definition.scm << 'EOF'
+(function_definition
+  name: (identifier) @name) @function.definition
+EOF
+
+# Test against a sample file
+tree-sitter query queries/test-definition.scm sample.ml
+```
+
+Create a comprehensive test file that covers:
+- Simple function definitions
+- Functions with various argument patterns
+- Nested functions
+- Method definitions (if applicable)
+- Different call patterns (simple, qualified, chained)
+- Various import styles
+
+Example test output:
+
+```
+sample.ml
+  pattern: 0
+    capture: 1 - function.definition, start: (5, 2), end: (5, 24)
+    capture: 0 - name, start: (5, 2), end: (5, 12), text: `myFunction`
+```
+
+### Step 5: Verify Language Detection
+
+Ensure the language exists in `languages.yml` with correct:
+- `extensions` - file extensions
+- `type: programming`
+- `language_id` - unique ID
+
+Most common languages are already in `languages.yml` (sourced from GitHub Linguist).
+
+### Step 6: Build and Test
+
+```bash
+# Build glimpse
+cargo build
+
+# Test on a real file
+cargo run -- code path/to/file.ml:function_name
+
+# Test with callers
+cargo run -- code path/to/file.ml:function_name --callers -d 2
+```
+
+### Query Writing Tips
+
+1. **Use alternatives `[...]`** for multiple patterns:
+   ```scheme
+   (call_expression
+     function: [
+       (identifier) @name
+       (member_expression property: (identifier) @name)
+     ])
+   ```
+
+2. **Use predicates** for filtering:
+   ```scheme
+   ((identifier) @name
+    (#eq? @name "import"))
+   
+   ((identifier) @name
+    (#match? @name "^fetch.*"))
+   ```
+
+3. **Handle optional nodes** with `?`:
+   ```scheme
+   (function_definition
+     name: (identifier) @name
+     parameters: (parameters)? @params)
+   ```
+
+4. **Anchor with `.`** for adjacent siblings:
+   ```scheme
+   (comment)* @doc
+   .
+   (function_definition) @function
+   ```
+
+5. **Examine the AST** when queries don't match:
+   ```bash
+   tree-sitter parse sample.ml
+   ```
+
+### Common Pitfalls
+
+- **Wrong node names**: Always check `src/node-types.json` for exact names
+- **Missing field names**: Some nodes use positional children, not named fields
+- **Nested structures**: Languages with currying or chaining need multiple patterns
+- **External scanner**: Some grammars have custom scanners in `src/scanner.c`
+
+### LSP Configuration Options
+
+```toml
+[language.lsp]
+binary = "lsp-server"           # executable name
+args = ["--stdio"]              # CLI arguments
+npm_package = "pkg-name"        # install via npm
+go_package = "pkg/path@latest"  # install via go
+version = "1.0.0"               # for URL-based downloads
+url_template = "https://..."    # download URL pattern
+archive = "zip"                 # or "tar.gz", "gz"
+binary_path = "bin/server"      # path within archive
+
+[language.lsp.targets]          # platform-specific target names
+"x86_64-unknown-linux-gnu" = "linux-x64"
+"aarch64-apple-darwin" = "darwin-arm64"
+```
