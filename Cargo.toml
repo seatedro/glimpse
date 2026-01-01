@@ -54,6 +54,7 @@ xz2 = "0.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "io-util", "process", "sync", "time", "macros"] }
+console = "0.16.2"
 
 [build-dependencies]
 serde = { version = "1.0.217", features = ["derive"] }

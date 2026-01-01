@@ -4,6 +4,7 @@ extensions = ["go"]
 repo = "https://github.com/tree-sitter/tree-sitter-go"
 branch = "master"
 symbol = "tree_sitter_go"
+color = "#00ADD8"
 definition_query = """
 (
   (comment)* @doc
@@ -57,6 +58,7 @@ extensions = ["zig"]
 repo = "https://github.com/tree-sitter-grammars/tree-sitter-zig"
 branch = "master"
 symbol = "tree_sitter_zig"
+color = "#F7A41D"
 definition_query = """
 (
   (comment)* @doc
@@ -103,6 +105,7 @@ extensions = ["c", "h"]
 repo = "https://github.com/tree-sitter/tree-sitter-c"
 branch = "master"
 symbol = "tree_sitter_c"
+color = "#555555"
 definition_query = """
 (
   (comment)* @doc
@@ -156,6 +159,7 @@ extensions = ["cpp", "cc", "cxx", "hpp", "hxx"]
 repo = "https://github.com/tree-sitter/tree-sitter-cpp"
 branch = "master"
 symbol = "tree_sitter_cpp"
+color = "#f34b7d"
 definition_query = """
 (
   (comment)* @doc
@@ -254,6 +258,7 @@ extensions = ["sh", "bash"]
 repo = "https://github.com/tree-sitter/tree-sitter-bash"
 branch = "master"
 symbol = "tree_sitter_bash"
+color = "#89e051"
 definition_query = """
 (
   (comment)* @doc
@@ -289,6 +294,7 @@ extensions = ["py"]
 repo = "https://github.com/tree-sitter/tree-sitter-python"
 branch = "master"
 symbol = "tree_sitter_python"
+color = "#3572A5"
 definition_query = """
 (
   (comment)* @doc
@@ -349,6 +355,7 @@ repo = "https://github.com/tree-sitter/tree-sitter-typescript"
 branch = "master"
 subpath = "typescript"
 symbol = "tree_sitter_typescript"
+color = "#3178c6"
 definition_query = """
 (
   (comment)* @doc
@@ -408,6 +415,7 @@ extensions = ["rs"]
 repo = "https://github.com/tree-sitter/tree-sitter-rust"
 branch = "master"
 symbol = "tree_sitter_rust"
+color = "#dea584"
 definition_query = """
 (
   (line_comment)* @doc
@@ -474,6 +482,7 @@ extensions = ["js", "mjs", "cjs"]
 repo = "https://github.com/tree-sitter/tree-sitter-javascript"
 branch = "master"
 symbol = "tree_sitter_javascript"
+color = "#f1e05a"
 definition_query = """
 (
   (comment)* @doc
@@ -538,6 +547,7 @@ extensions = ["java"]
 repo = "https://github.com/tree-sitter/tree-sitter-java"
 branch = "master"
 symbol = "tree_sitter_java"
+color = "#b07219"
 definition_query = """
 (class_body
   (block_comment) @doc
@@ -586,6 +596,7 @@ extensions = ["scala", "sc"]
 repo = "https://github.com/tree-sitter/tree-sitter-scala"
 branch = "master"
 symbol = "tree_sitter_scala"
+color = "#c22d40"
 definition_query = """
 (
   (block_comment)* @doc

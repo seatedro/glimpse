@@ -7,13 +7,7 @@ use glimpse::code::lsp::AsyncLspResolver;
 use tempfile::TempDir;
 use tree_sitter::Parser;
 
-fn index_file(
-    index: &mut Index,
-    extractor: &Extractor,
-    base: &Path,
-    path: &Path,
-    source: &str,
-) {
+fn index_file(index: &mut Index, extractor: &Extractor, base: &Path, path: &Path, source: &str) {
     let mut parser = Parser::new();
     parser.set_language(extractor.language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
@@ -61,7 +55,9 @@ async fn resolve_call(
 ) -> Option<String> {
     let calls: Vec<&Call> = vec![call];
     let results = resolver.resolve_calls_batch(&calls, index, 1).await;
-    results.first().map(|(_, resolved)| resolved.target_name.clone())
+    results
+        .first()
+        .map(|(_, resolved)| resolved.target_name.clone())
 }
 
 mod rust_lsp {
@@ -200,11 +196,26 @@ edition = "2021"
 
         let mut index = Index::new();
         let extractor = Extractor::new("rust").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &src.join("main.rs"), main_rs);
-        index_file(&mut index, &extractor, dir.path(), &src.join("utils.rs"), utils_rs);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &src.join("main.rs"),
+            main_rs,
+        );
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &src.join("utils.rs"),
+            utils_rs,
+        );
 
         let calls = collect_calls(&index);
-        eprintln!("calls: {:?}", calls.iter().map(|c| &c.callee).collect::<Vec<_>>());
+        eprintln!(
+            "calls: {:?}",
+            calls.iter().map(|c| &c.callee).collect::<Vec<_>>()
+        );
         let process_call = calls.iter().find(|c| c.callee == "process");
         assert!(process_call.is_some(), "Should find call to process()");
 
@@ -212,7 +223,10 @@ edition = "2021"
         eprintln!("created resolver for {:?}", dir.path());
 
         if let Some(call) = process_call {
-            eprintln!("resolving call: {:?} at {:?}:{}", call.callee, call.file, call.span.start_line);
+            eprintln!(
+                "resolving call: {:?} at {:?}:{}",
+                call.callee, call.file, call.span.start_line
+            );
             let def_name = resolve_call(&mut resolver, call, &index).await;
             eprintln!("def_name: {:?}", def_name);
             eprintln!("stats: {:?}", resolver.stats());
@@ -259,7 +273,13 @@ func helper() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("go").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.go"), main_go);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.go"),
+            main_go,
+        );
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from Go code");
@@ -314,8 +334,20 @@ func Process() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("go").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.go"), main_go);
-        index_file(&mut index, &extractor, dir.path(), &utils_dir.join("utils.go"), utils_go);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.go"),
+            main_go,
+        );
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &utils_dir.join("utils.go"),
+            utils_go,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "Process");
@@ -325,7 +357,10 @@ func Process() {
 
         if let Some(call) = process_call {
             let def_name = resolve_call(&mut resolver, call, &index).await;
-            assert!(def_name.is_some(), "LSP should resolve utils.Process() call");
+            assert!(
+                def_name.is_some(),
+                "LSP should resolve utils.Process() call"
+            );
             assert_eq!(def_name.unwrap(), "Process");
         }
 
@@ -364,7 +399,13 @@ if __name__ == "__main__":
 
         let mut index = Index::new();
         let extractor = Extractor::new("python").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.py"), main_py);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.py"),
+            main_py,
+        );
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from Python code");
@@ -411,8 +452,20 @@ if __name__ == "__main__":
 
         let mut index = Index::new();
         let extractor = Extractor::new("python").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.py"), main_py);
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.py"), utils_py);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.py"),
+            main_py,
+        );
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("utils.py"),
+            utils_py,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -472,7 +525,13 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("typescript").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.ts"), main_ts);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.ts"),
+            main_ts,
+        );
 
         let calls = collect_calls(&index);
         assert!(
@@ -533,8 +592,20 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("typescript").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.ts"), main_ts);
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.ts"), utils_ts);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.ts"),
+            main_ts,
+        );
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("utils.ts"),
+            utils_ts,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -593,7 +664,13 @@ main();
 
         let mut index = Index::new();
         let extractor = Extractor::new("javascript").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.js"), main_js);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.js"),
+            main_js,
+        );
 
         let calls = collect_calls(&index);
         assert!(
@@ -661,7 +738,13 @@ void helper(void) {
 
         let mut index = Index::new();
         let extractor = Extractor::new("c").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.c"), main_c);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.c"),
+            main_c,
+        );
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from C code");
@@ -735,8 +818,20 @@ void process(void) {
 
         let mut index = Index::new();
         let extractor = Extractor::new("c").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.c"), main_c);
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("utils.c"), utils_c);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.c"),
+            main_c,
+        );
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("utils.c"),
+            utils_c,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");
@@ -799,7 +894,13 @@ void helper() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.cpp"), main_cpp);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.cpp"),
+            main_cpp,
+        );
 
         let calls = collect_calls(&index);
         assert!(!calls.is_empty(), "Should extract calls from C++ code");
@@ -860,7 +961,13 @@ int main() {
 
         let mut index = Index::new();
         let extractor = Extractor::new("cpp").unwrap();
-        index_file(&mut index, &extractor, dir.path(), &dir.path().join("main.cpp"), main_cpp);
+        index_file(
+            &mut index,
+            &extractor,
+            dir.path(),
+            &dir.path().join("main.cpp"),
+            main_cpp,
+        );
 
         let calls = collect_calls(&index);
         let process_call = calls.iter().find(|c| c.callee == "process");

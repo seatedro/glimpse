@@ -1,6 +1,7 @@
 mod analyzer;
 mod cli;
 mod output;
+mod progress;
 
 use std::collections::HashMap;
 use std::fs;
@@ -8,13 +9,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
 use crate::analyzer::process_directory;
 use crate::cli::{Cli, CodeArgs, Commands, FunctionTarget, IndexCommand};
+use crate::progress::ProgressContext;
 use glimpse::code::extract::Extractor;
 use glimpse::code::graph::CallGraph;
 use glimpse::code::index::{
@@ -281,19 +282,130 @@ fn handle_code_command(args: &CodeArgs) -> Result<()> {
     let target = FunctionTarget::parse(&args.target)?;
 
     let mut index = load_index(&root)?.unwrap_or_else(Index::new);
-    let needs_update = index_directory(&root, &mut index, args.hidden, args.no_ignore)?;
-    let mut needs_save = needs_update > 0;
+    let mut progress = ProgressContext::new();
 
-    // Only run LSP resolution if:
-    // 1. --precise is requested
-    // 2. Either files were updated OR no calls have been resolved yet (first --precise run)
-    let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
-    if args.precise && (needs_update > 0 || !has_any_resolved) {
-        let resolved = resolve_calls_with_lsp(&root, &mut index)?;
-        if resolved > 0 {
-            needs_save = true;
+    // Scan for stale files
+    progress.scanning();
+    let source_files: Vec<_> = ignore::WalkBuilder::new(&root)
+        .hidden(!args.hidden)
+        .git_ignore(!args.no_ignore)
+        .ignore(!args.no_ignore)
+        .build()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|e| is_source_file(e.path()))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| !ext.is_empty())
+        })
+        .collect();
+
+    let stale_files: Vec<_> = source_files
+        .into_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let rel_path = path.strip_prefix(&root).unwrap_or(path);
+            let ext = path.extension().and_then(|e| e.to_str())?;
+            if ext.is_empty() {
+                return None;
+            }
+            let (mtime, size) = file_fingerprint(path).ok()?;
+            if index.is_stale(rel_path, mtime, size) {
+                Some((
+                    path.to_path_buf(),
+                    rel_path.to_path_buf(),
+                    ext.to_string(),
+                    mtime,
+                    size,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let files_to_index = stale_files.len();
+    let unresolved_calls = if args.precise {
+        index
+            .files
+            .values()
+            .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+            .sum::<usize>()
+    } else {
+        0
+    };
+
+    let total_work = files_to_index + unresolved_calls;
+    if total_work > 0 {
+        progress.set_indexing_total(files_to_index as u64);
+        if args.precise {
+            progress.set_lsp_total(unresolved_calls as u64);
         }
     }
+
+    // Index stale files
+    let mut needs_update = 0;
+    for chunk in stale_files.chunks(INDEX_CHUNK_SIZE) {
+        let records: Vec<FileRecord> = chunk
+            .par_iter()
+            .filter_map(|(path, rel_path, ext, mtime, size)| {
+                let extractor = match Extractor::from_extension(ext) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        debug!(ext = %ext, error = ?e, "no extractor for extension");
+                        return None;
+                    }
+                };
+                let source = fs::read(path).ok()?;
+
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(extractor.language()).ok()?;
+                let tree = parser.parse(&source, None)?;
+
+                let definitions = extractor.extract_definitions(&tree, &source, rel_path);
+                let calls = extractor.extract_calls(&tree, &source, rel_path);
+                let imports = extractor.extract_imports(&tree, &source, rel_path);
+
+                progress.indexing_file(rel_path);
+
+                Some(FileRecord {
+                    path: rel_path.to_path_buf(),
+                    mtime: *mtime,
+                    size: *size,
+                    definitions,
+                    calls,
+                    imports,
+                })
+            })
+            .collect();
+
+        needs_update += records.len();
+        for record in records {
+            index.update(record);
+        }
+    }
+
+    let mut needs_save = needs_update > 0;
+
+    let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+    if args.precise && (needs_update > 0 || !has_any_resolved) {
+        let new_unresolved: usize = index
+            .files
+            .values()
+            .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+            .sum();
+
+        if new_unresolved > 0 {
+            progress.set_lsp_total(new_unresolved as u64);
+            let resolved = resolve_calls_with_lsp(&root, &mut index, &progress)?;
+            if resolved > 0 {
+                needs_save = true;
+            }
+        }
+    }
+    progress.finish_clear();
 
     if needs_save {
         save_index(&index, &root)?;
@@ -361,35 +473,145 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
                 load_index(&root)?.unwrap_or_else(Index::new)
             };
 
-            let updated = index_directory(&root, &mut index, *hidden, *no_ignore)?;
+            let mut progress = ProgressContext::new();
 
-            // Only run LSP resolution if files were updated or no calls resolved yet
-            let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
-            if *precise && (updated > 0 || !has_any_resolved) {
-                let resolved = resolve_calls_with_lsp(&root, &mut index)?;
-                if resolved > 0 {
-                    eprintln!("Resolved {} calls with LSP", resolved);
+            // First pass: scan to find stale files
+            progress.scanning();
+            let source_files: Vec<_> = ignore::WalkBuilder::new(&root)
+                .hidden(!*hidden)
+                .git_ignore(!*no_ignore)
+                .ignore(!*no_ignore)
+                .build()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+                .filter(|e| is_source_file(e.path()))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| !ext.is_empty())
+                })
+                .collect();
+
+            let stale_files: Vec<_> = source_files
+                .into_iter()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    let rel_path = path.strip_prefix(&root).unwrap_or(path);
+                    let ext = path.extension().and_then(|e| e.to_str())?;
+                    if ext.is_empty() {
+                        return None;
+                    }
+                    let (mtime, size) = file_fingerprint(path).ok()?;
+                    if index.is_stale(rel_path, mtime, size) {
+                        Some((
+                            path.to_path_buf(),
+                            rel_path.to_path_buf(),
+                            ext.to_string(),
+                            mtime,
+                            size,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            let files_to_index = stale_files.len() as u64;
+
+            // Count unresolved calls for LSP phase
+            let unresolved_calls = if *precise {
+                index
+                    .files
+                    .values()
+                    .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+                    .sum::<usize>() as u64
+            } else {
+                0
+            };
+
+            // Set total for unified progress bar
+            let total_work = files_to_index + unresolved_calls;
+            if total_work > 0 {
+                progress.set_indexing_total(files_to_index);
+                if *precise {
+                    progress.set_lsp_total(unresolved_calls);
                 }
             }
 
-            save_index(&index, &root)?;
+            // Index stale files
+            let mut updated = 0;
+            for chunk in stale_files.chunks(INDEX_CHUNK_SIZE) {
+                let records: Vec<FileRecord> = chunk
+                    .par_iter()
+                    .filter_map(|(path, rel_path, ext, mtime, size)| {
+                        let extractor = match Extractor::from_extension(ext) {
+                            Ok(e) => e,
+                            Err(e) => {
+                                debug!(ext = %ext, error = ?e, "no extractor for extension");
+                                return None;
+                            }
+                        };
+                        let source = fs::read(path).ok()?;
+
+                        let mut parser = tree_sitter::Parser::new();
+                        parser.set_language(extractor.language()).ok()?;
+                        let tree = parser.parse(&source, None)?;
+
+                        let definitions = extractor.extract_definitions(&tree, &source, rel_path);
+                        let calls = extractor.extract_calls(&tree, &source, rel_path);
+                        let imports = extractor.extract_imports(&tree, &source, rel_path);
+
+                        progress.indexing_file(rel_path);
+
+                        Some(FileRecord {
+                            path: rel_path.to_path_buf(),
+                            mtime: *mtime,
+                            size: *size,
+                            definitions,
+                            calls,
+                            imports,
+                        })
+                    })
+                    .collect();
+
+                updated += records.len();
+                for record in records {
+                    index.update(record);
+                }
+            }
+
+            // LSP resolution if precise mode
+            let has_any_resolved = index.calls().any(|c| c.resolved.is_some());
+            if *precise && (updated > 0 || !has_any_resolved) {
+                // Re-count after indexing (new calls may have been added)
+                let new_unresolved: usize = index
+                    .files
+                    .values()
+                    .map(|r| r.calls.iter().filter(|c| c.resolved.is_none()).count())
+                    .sum();
+
+                if new_unresolved > 0 {
+                    progress.set_lsp_total(new_unresolved as u64);
+                    let resolved = resolve_calls_with_lsp(&root, &mut index, &progress)?;
+                    if resolved > 0 {
+                        debug!("Resolved {} calls with LSP", resolved);
+                    }
+                }
+            }
 
             let file_count = index.files.len();
             let def_count = index.definitions().count();
             let call_count = index.calls().count();
             let resolved_count = index.calls().filter(|c| c.resolved.is_some()).count();
 
-            if updated > 0 || *precise {
-                eprintln!(
-                    "Index updated: {} files ({} updated), {} definitions, {} calls ({} resolved)",
-                    file_count, updated, def_count, call_count, resolved_count
-                );
-            } else {
-                eprintln!(
-                    "Index up to date: {} files, {} definitions, {} calls ({} resolved)",
-                    file_count, def_count, call_count, resolved_count
-                );
-            }
+            let summary = format!(
+                "{} files, {} defs, {} calls ({} resolved)",
+                file_count, def_count, call_count, resolved_count
+            );
+            progress.finish(&summary);
+
+            save_index(&index, &root)?;
         }
         IndexCommand::Clear { path } => {
             let root = path.canonicalize().unwrap_or_else(|_| path.clone());
@@ -424,126 +646,13 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
 
 const INDEX_CHUNK_SIZE: usize = 256;
 
-fn index_directory(root: &Path, index: &mut Index, hidden: bool, no_ignore: bool) -> Result<usize> {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .expect("valid template"),
-    );
-    pb.set_message("scanning files...");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
-    let source_files: Vec<_> = ignore::WalkBuilder::new(root)
-        .hidden(!hidden)
-        .git_ignore(!no_ignore)
-        .ignore(!no_ignore)
-        .build()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| is_source_file(e.path()))
-        .filter(|e| {
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| !ext.is_empty())
-        })
-        .collect();
-
-    pb.set_message(format!(
-        "found {} source files, checking for changes...",
-        source_files.len()
-    ));
-
-    let stale_files: Vec<_> = source_files
-        .into_iter()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let rel_path = path.strip_prefix(root).unwrap_or(path);
-            let ext = path.extension().and_then(|e| e.to_str())?;
-            if ext.is_empty() {
-                return None;
-            }
-            let (mtime, size) = file_fingerprint(path).ok()?;
-            if index.is_stale(rel_path, mtime, size) {
-                Some((
-                    path.to_path_buf(),
-                    rel_path.to_path_buf(),
-                    ext.to_string(),
-                    mtime,
-                    size,
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    pb.finish_and_clear();
-
-    let total = stale_files.len();
-    if total == 0 {
-        return Ok(0);
-    }
-
-    let pb = ProgressBar::new(total as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .expect("valid template")
-            .progress_chars("#>-"),
-    );
-    pb.set_message("indexing...");
-
-    let mut updated = 0;
-
-    for chunk in stale_files.chunks(INDEX_CHUNK_SIZE) {
-        let records: Vec<FileRecord> = chunk
-            .par_iter()
-            .filter_map(|(path, rel_path, ext, mtime, size)| {
-                let extractor = match Extractor::from_extension(ext) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        debug!(ext = %ext, error = ?e, "no extractor for extension");
-                        return None;
-                    }
-                };
-                let source = fs::read(path).ok()?;
-
-                let mut parser = tree_sitter::Parser::new();
-                parser.set_language(extractor.language()).ok()?;
-                let tree = parser.parse(&source, None)?;
-
-                let definitions = extractor.extract_definitions(&tree, &source, rel_path);
-                let calls = extractor.extract_calls(&tree, &source, rel_path);
-                let imports = extractor.extract_imports(&tree, &source, rel_path);
-
-                pb.inc(1);
-
-                Some(FileRecord {
-                    path: rel_path.to_path_buf(),
-                    mtime: *mtime,
-                    size: *size,
-                    definitions,
-                    calls,
-                    imports,
-                })
-            })
-            .collect();
-
-        updated += records.len();
-        for record in records {
-            index.update(record);
-        }
-    }
-
-    pb.finish_and_clear();
-    Ok(updated)
-}
-
 type CacheKey = (String, Option<String>, PathBuf);
 
-fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
+fn resolve_calls_with_lsp(
+    root: &Path,
+    index: &mut Index,
+    progress: &ProgressContext,
+) -> Result<usize> {
     use glimpse::code::index::ResolvedCall;
 
     let unresolved_count: usize = index
@@ -556,51 +665,29 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
         return Ok(0);
     }
 
-    let pb = ProgressBar::new(unresolved_count as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-            .expect("valid template")
-            .progress_chars("#>-"),
-    );
-    pb.set_message("resolving calls with LSP...");
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    progress.lsp_warming("LSP");
 
     let rt = tokio::runtime::Runtime::new()?;
     let concurrency = 50;
 
-    let (resolved, stats, cache_hits, cache_misses) = rt.block_on(async {
+    let (resolved, stats, cache_hits, cache_misses, timing) = rt.block_on(async {
         let mut resolver = AsyncLspResolver::new(root);
         let mut cache: HashMap<CacheKey, Option<ResolvedCall>> = HashMap::new();
         let mut cache_hits = 0usize;
         let mut cache_misses = 0usize;
         let mut total_resolved = 0usize;
 
-        let file_paths: Vec<_> = index.files.keys().cloned().collect();
+        // Collect ALL unresolved calls from ALL files upfront
+        // (file_path, call_idx, call, cache_key)
+        let mut all_calls: Vec<(PathBuf, usize, glimpse::code::index::Call, CacheKey)> = Vec::new();
+        let mut cached_resolutions: Vec<(PathBuf, usize, ResolvedCall)> = Vec::new();
 
-        for file_path in &file_paths {
-            let calls_to_resolve: Vec<_> = {
-                let Some(record) = index.files.get(file_path) else {
+        for (file_path, record) in &index.files {
+            for (call_idx, call) in record.calls.iter().enumerate() {
+                if call.resolved.is_some() {
                     continue;
-                };
-                record
-                    .calls
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.resolved.is_none())
-                    .map(|(i, c)| (i, c.clone()))
-                    .collect()
-            };
+                }
 
-            if calls_to_resolve.is_empty() {
-                continue;
-            }
-
-            let call_count = calls_to_resolve.len();
-            let mut calls_for_lsp = Vec::new();
-            let mut cached_resolutions = Vec::new();
-
-            for (call_idx, call) in &calls_to_resolve {
                 let cache_key: CacheKey = (
                     call.callee.clone(),
                     call.qualifier.clone(),
@@ -610,57 +697,60 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
                 if let Some(cached_result) = cache.get(&cache_key) {
                     cache_hits += 1;
                     if let Some(resolved_call) = cached_result.clone() {
-                        cached_resolutions.push((*call_idx, resolved_call));
+                        cached_resolutions.push((file_path.clone(), call_idx, resolved_call));
                     }
                 } else {
                     cache_misses += 1;
-                    calls_for_lsp.push((*call_idx, call.clone(), cache_key));
+                    all_calls.push((file_path.clone(), call_idx, call.clone(), cache_key));
                 }
             }
+        }
 
-            if !calls_for_lsp.is_empty() {
-                let call_refs: Vec<_> = calls_for_lsp.iter().map(|(_, c, _)| c).collect();
-                let results = resolver
-                    .resolve_calls_batch(&call_refs, index, concurrency)
-                    .await;
+        // Resolve all calls in ONE batch
+        if !all_calls.is_empty() {
+            let call_refs: Vec<_> = all_calls.iter().map(|(_, _, c, _)| c).collect();
+            let skip_hover = true;
+            let results = resolver
+                .resolve_calls_batch(&call_refs, index, concurrency, skip_hover)
+                .await;
 
-                for (batch_idx, resolved_call) in results {
-                    let (call_idx, _, cache_key) = &calls_for_lsp[batch_idx];
-                    cache.insert(cache_key.clone(), Some(resolved_call.clone()));
+            for (batch_idx, resolved_call) in results {
+                let (file_path, call_idx, call, cache_key) = &all_calls[batch_idx];
+                cache.insert(cache_key.clone(), Some(resolved_call.clone()));
 
-                    if let Some(record) = index.files.get_mut(file_path) {
-                        if *call_idx < record.calls.len() {
-                            record.calls[*call_idx].resolved = Some(resolved_call);
-                            total_resolved += 1;
-                        }
-                    }
-                }
+                progress.resolving_call(&call.file, &resolved_call.target_name);
 
-                for (_, _, cache_key) in &calls_for_lsp {
-                    if !cache.contains_key(cache_key) {
-                        cache.insert(cache_key.clone(), None);
-                    }
-                }
-            }
-
-            for (call_idx, resolved_call) in cached_resolutions {
                 if let Some(record) = index.files.get_mut(file_path) {
-                    if call_idx < record.calls.len() {
-                        record.calls[call_idx].resolved = Some(resolved_call);
+                    if *call_idx < record.calls.len() {
+                        record.calls[*call_idx].resolved = Some(resolved_call);
                         total_resolved += 1;
                     }
                 }
             }
 
-            pb.inc(call_count as u64);
+            // Mark unresolved calls in cache as None
+            for (_, _, _, cache_key) in &all_calls {
+                if !cache.contains_key(cache_key) {
+                    cache.insert(cache_key.clone(), None);
+                }
+            }
+        }
+
+        // Apply cached resolutions
+        for (file_path, call_idx, resolved_call) in cached_resolutions {
+            if let Some(record) = index.files.get_mut(&file_path) {
+                if call_idx < record.calls.len() {
+                    record.calls[call_idx].resolved = Some(resolved_call);
+                    total_resolved += 1;
+                }
+            }
         }
 
         resolver.shutdown_all().await;
         let stats = resolver.stats().clone();
-        (total_resolved, stats, cache_hits, cache_misses)
+        let timing = resolver.timing_stats().to_string();
+        (total_resolved, stats, cache_hits, cache_misses, timing)
     });
-
-    pb.finish_and_clear();
 
     if stats.by_server.is_empty() {
         debug!("LSP: no servers responded");
@@ -679,6 +769,8 @@ fn resolve_calls_with_lsp(root: &Path, index: &mut Index) -> Result<usize> {
             "resolution cache stats"
         );
     }
+
+    eprintln!("\n{}", timing);
 
     Ok(resolved)
 }

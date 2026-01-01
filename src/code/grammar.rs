@@ -46,6 +46,7 @@ pub struct LanguageEntry {
     pub call_query: String,
     pub import_query: String,
     pub lsp: Option<LspConfig>,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

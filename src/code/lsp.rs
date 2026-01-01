@@ -3,7 +3,8 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
@@ -420,11 +421,27 @@ fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     );
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum LspId {
+    Int(i32),
+    String(String),
+}
+
+impl LspId {
+    fn as_i32(&self) -> Option<i32> {
+        match self {
+            LspId::Int(n) => Some(*n),
+            LspId::String(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct LspMessage {
     jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<i32>,
+    id: Option<LspId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -468,6 +485,110 @@ pub struct LspServerStats {
     pub no_match: usize,
 }
 
+#[derive(Debug, Default)]
+pub struct LspTimingStats {
+    pub wait_ready_ms: AtomicU64,
+    pub open_source_files_ms: AtomicU64,
+    pub open_source_files_count: AtomicU64,
+    pub open_def_files_ms: AtomicU64,
+    pub open_def_files_count: AtomicU64,
+    pub goto_definition_ms: AtomicU64,
+    pub goto_definition_count: AtomicU64,
+    pub hover_ms: AtomicU64,
+    pub hover_count: AtomicU64,
+    pub declaration_chase_ms: AtomicU64,
+    pub declaration_chase_count: AtomicU64,
+}
+
+impl LspTimingStats {
+    pub fn add_wait_ready(&self, ms: u64) {
+        self.wait_ready_ms.fetch_add(ms, Ordering::Relaxed);
+    }
+
+    pub fn add_open_source_file(&self, ms: u64) {
+        self.open_source_files_ms.fetch_add(ms, Ordering::Relaxed);
+        self.open_source_files_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_open_def_file(&self, ms: u64) {
+        self.open_def_files_ms.fetch_add(ms, Ordering::Relaxed);
+        self.open_def_files_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_goto_definition(&self, ms: u64) {
+        self.goto_definition_ms.fetch_add(ms, Ordering::Relaxed);
+        self.goto_definition_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_hover(&self, ms: u64) {
+        self.hover_ms.fetch_add(ms, Ordering::Relaxed);
+        self.hover_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn add_declaration_chase(&self, ms: u64) {
+        self.declaration_chase_ms.fetch_add(ms, Ordering::Relaxed);
+        self.declaration_chase_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl std::fmt::Display for LspTimingStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let wait_ready = self.wait_ready_ms.load(Ordering::Relaxed);
+        let open_src_ms = self.open_source_files_ms.load(Ordering::Relaxed);
+        let open_src_count = self.open_source_files_count.load(Ordering::Relaxed);
+        let open_def_ms = self.open_def_files_ms.load(Ordering::Relaxed);
+        let open_def_count = self.open_def_files_count.load(Ordering::Relaxed);
+        let goto_ms = self.goto_definition_ms.load(Ordering::Relaxed);
+        let goto_count = self.goto_definition_count.load(Ordering::Relaxed);
+        let hover_ms = self.hover_ms.load(Ordering::Relaxed);
+        let hover_count = self.hover_count.load(Ordering::Relaxed);
+        let decl_ms = self.declaration_chase_ms.load(Ordering::Relaxed);
+        let decl_count = self.declaration_chase_count.load(Ordering::Relaxed);
+
+        writeln!(f, "LSP Timing Breakdown:")?;
+        writeln!(f, "  wait_for_ready:     {:>7}ms", wait_ready)?;
+        writeln!(
+            f,
+            "  open source files:  {:>7}ms ({} files, {:.1}ms avg)",
+            open_src_ms,
+            open_src_count,
+            if open_src_count > 0 { open_src_ms as f64 / open_src_count as f64 } else { 0.0 }
+        )?;
+        writeln!(
+            f,
+            "  open def files:     {:>7}ms ({} files, {:.1}ms avg)",
+            open_def_ms,
+            open_def_count,
+            if open_def_count > 0 { open_def_ms as f64 / open_def_count as f64 } else { 0.0 }
+        )?;
+        writeln!(
+            f,
+            "  goto_definition:    {:>7}ms ({} calls, {:.1}ms avg)",
+            goto_ms,
+            goto_count,
+            if goto_count > 0 { goto_ms as f64 / goto_count as f64 } else { 0.0 }
+        )?;
+        writeln!(
+            f,
+            "  hover:              {:>7}ms ({} calls, {:.1}ms avg)",
+            hover_ms,
+            hover_count,
+            if hover_count > 0 { hover_ms as f64 / hover_count as f64 } else { 0.0 }
+        )?;
+        writeln!(
+            f,
+            "  declaration chase:  {:>7}ms ({} calls, {:.1}ms avg)",
+            decl_ms,
+            decl_count,
+            if decl_count > 0 { decl_ms as f64 / decl_count as f64 } else { 0.0 }
+        )?;
+
+        let total = wait_ready + open_src_ms + open_def_ms + goto_ms + hover_ms + decl_ms;
+        writeln!(f, "  ─────────────────────────────")?;
+        writeln!(f, "  total accounted:    {:>7}ms", total)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct LspStats {
     pub by_server: HashMap<String, LspServerStats>,
@@ -508,8 +629,6 @@ impl std::fmt::Display for LspStats {
         write!(f, "{}", parts.join("\n     "))
     }
 }
-
-
 
 fn extract_signature(hover_content: &str) -> Option<String> {
     let lines: Vec<&str> = hover_content.lines().collect();
@@ -636,7 +755,7 @@ pub fn ensure_lsp_for_extension(ext: &str, root: &Path) -> Result<PathBuf> {
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as TokioBufReader};
 use tokio::process::{Child as TokioChild, Command as TokioCommand};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, Notify};
 
 #[derive(Debug)]
 struct AsyncLspClientInner {
@@ -646,6 +765,8 @@ struct AsyncLspClientInner {
     root_uri: Uri,
     opened_files: Mutex<HashMap<PathBuf, i32>>,
     is_ready: std::sync::atomic::AtomicBool,
+    active_progress: Mutex<HashSet<String>>,
+    progress_notify: Notify,
     _process: Mutex<TokioChild>,
 }
 
@@ -679,6 +800,8 @@ impl AsyncLspClient {
             root_uri,
             opened_files: Mutex::new(HashMap::new()),
             is_ready: std::sync::atomic::AtomicBool::new(false),
+            active_progress: Mutex::new(HashSet::new()),
+            progress_notify: Notify::new(),
             _process: Mutex::new(process),
         });
 
@@ -712,15 +835,22 @@ impl AsyncLspClient {
                 result = Self::read_one_message(&mut reader, &mut header_buf) => {
                     match result {
                         Ok(Some(msg)) => {
-                            if let Some(id) = msg.id {
-                                let mut pending_guard = inner.pending.lock().await;
-                                if let Some(tx) = pending_guard.remove(&id) {
-                                    let result = if let Some(error) = msg.error {
-                                        Err(format!("LSP error: {}", error))
-                                    } else {
-                                        Ok(msg.result.unwrap_or(Value::Null))
-                                    };
-                                    let _ = tx.send(result);
+                            if let Some(ref method) = msg.method {
+                                Self::handle_server_message(&inner, &msg, method).await;
+                            }
+                            if let Some(ref id) = msg.id {
+                                if msg.method.is_none() {
+                                    if let Some(int_id) = id.as_i32() {
+                                        let mut pending_guard = inner.pending.lock().await;
+                                        if let Some(tx) = pending_guard.remove(&int_id) {
+                                            let result = if let Some(ref error) = msg.error {
+                                                Err(format!("LSP error: {}", error))
+                                            } else {
+                                                Ok(msg.result.clone().unwrap_or(Value::Null))
+                                            };
+                                            let _ = tx.send(result);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -732,6 +862,67 @@ impl AsyncLspClient {
                     }
                 }
             }
+        }
+    }
+
+    async fn handle_server_message(inner: &Arc<AsyncLspClientInner>, msg: &LspMessage, method: &str) {
+        match method {
+            "window/workDoneProgress/create" => {
+                if let Some(ref id) = msg.id {
+                    if let Some(ref params) = msg.params {
+                        if let Some(token) = params.get("token").and_then(|t| t.as_str()) {
+                            let mut progress = inner.active_progress.lock().await;
+                            progress.insert(token.to_string());
+                            trace!(token = %token, "progress token created");
+                        }
+                    }
+                    let response = LspMessage {
+                        jsonrpc: "2.0".to_string(),
+                        id: Some(id.clone()),
+                        method: None,
+                        params: None,
+                        result: Some(Value::Null),
+                        error: None,
+                    };
+                    let content = serde_json::to_string(&response).unwrap_or_default();
+                    let header = format!("Content-Length: {}\r\n\r\n", content.len());
+                    let mut writer = inner.writer.lock().await;
+                    let _ = writer.write_all(header.as_bytes()).await;
+                    let _ = writer.write_all(content.as_bytes()).await;
+                    let _ = writer.flush().await;
+                }
+            }
+            "$/progress" => {
+                if let Some(ref params) = msg.params {
+                    let token = params
+                        .get("token")
+                        .and_then(|t| t.as_str().map(|s| s.to_string()).or_else(|| t.as_i64().map(|n| n.to_string())));
+                    let kind = params
+                        .get("value")
+                        .and_then(|v| v.get("kind"))
+                        .and_then(|k| k.as_str());
+
+                    if let (Some(token), Some(kind)) = (token, kind) {
+                        match kind {
+                            "begin" => {
+                                let mut progress = inner.active_progress.lock().await;
+                                progress.insert(token.clone());
+                                trace!(token = %token, "progress begin");
+                            }
+                            "end" => {
+                                let mut progress = inner.active_progress.lock().await;
+                                progress.remove(&token);
+                                trace!(token = %token, remaining = progress.len(), "progress end");
+                                if progress.is_empty() {
+                                    inner.progress_notify.notify_waiters();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -792,7 +983,7 @@ impl AsyncLspClient {
 
         let msg = LspMessage {
             jsonrpc: "2.0".to_string(),
-            id: Some(id),
+            id: Some(LspId::Int(id)),
             method: Some(method.to_string()),
             params: Some(params),
             result: None,
@@ -805,18 +996,6 @@ impl AsyncLspClient {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(e)) => bail!("{}", e),
             Err(_) => bail!("LSP response channel closed"),
-        }
-    }
-
-    async fn send_request_with_timeout(
-        &self,
-        method: &str,
-        params: Value,
-        timeout: std::time::Duration,
-    ) -> Result<Value> {
-        match tokio::time::timeout(timeout, self.send_request(method, params)).await {
-            Ok(result) => result,
-            Err(_) => bail!("LSP request timed out after {:?}", timeout),
         }
     }
 
@@ -848,8 +1027,14 @@ impl AsyncLspClient {
             ..Default::default()
         };
 
+        let window_caps = lsp_types::WindowClientCapabilities {
+            work_done_progress: Some(true),
+            ..Default::default()
+        };
+
         let capabilities = ClientCapabilities {
             text_document: Some(text_document_caps),
+            window: Some(window_caps),
             ..Default::default()
         };
 
@@ -1002,67 +1187,44 @@ impl AsyncLspClient {
         Ok(Some(content))
     }
 
-    async fn wait_for_ready(&self, path: &Path, max_attempts: u32, server_name: &str) -> bool {
-        let uri = match path_to_uri(path) {
-            Ok(u) => u,
-            Err(_) => return false,
-        };
+    async fn wait_for_ready(&self, _path: &Path, _max_attempts: u32, server_name: &str) -> bool {
+        debug!(server = %server_name, "waiting for LSP to be ready via progress tracking");
 
-        debug!(server = %server_name, "waiting for LSP to be ready");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        for i in 0..10 {
-            let params = lsp_types::DocumentSymbolParams {
-                text_document: TextDocumentIdentifier { uri: uri.clone() },
-                work_done_progress_params: Default::default(),
-                partial_result_params: Default::default(),
+        for _ in 0..60 {
+            let progress_count = {
+                let progress = self.inner.active_progress.lock().await;
+                progress.len()
             };
 
-            let result = self
-                .send_request_with_timeout(
-                    "textDocument/documentSymbol",
-                    serde_json::to_value(params).unwrap_or_default(),
-                    std::time::Duration::from_secs(5),
-                )
-                .await;
-
-            match result {
-                Ok(Value::Array(arr)) if !arr.is_empty() => {
-                    trace!(server = %server_name, attempt = i, "syntax analysis ready");
-                    break;
-                }
-                _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+            if progress_count == 0 {
+                debug!(server = %server_name, "LSP ready (no active progress)");
+                return true;
             }
-        }
 
-        for attempt in 0..max_attempts {
-            let hover_params = json!({
-                "textDocument": { "uri": uri.as_str() },
-                "position": { "line": 0, "character": 4 }
-            });
+            trace!(server = %server_name, active = progress_count, "waiting for progress to complete");
 
-            let result = self
-                .send_request_with_timeout(
-                    "textDocument/hover",
-                    hover_params,
-                    std::time::Duration::from_secs(5),
-                )
-                .await;
+            let timeout = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                self.inner.progress_notify.notified(),
+            )
+            .await;
 
-            match result {
-                Ok(r) if !r.is_null() => {
-                    debug!(server = %server_name, attempts = attempt + 1, "LSP ready");
+            if timeout.is_ok() {
+                let remaining = {
+                    let progress = self.inner.active_progress.lock().await;
+                    progress.len()
+                };
+                if remaining == 0 {
+                    debug!(server = %server_name, "LSP ready (progress complete)");
                     return true;
                 }
-                _ => {}
-            }
-
-            if attempt < max_attempts - 1 {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
 
-        warn!(server = %server_name, "LSP did not become ready after {} attempts", max_attempts);
-        false
+        warn!(server = %server_name, "LSP wait timeout, proceeding anyway");
+        true
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -1085,7 +1247,9 @@ pub struct AsyncLspResolver {
     failed_servers: HashSet<String>,
     root: PathBuf,
     file_cache: HashMap<PathBuf, String>,
+    opened_files: HashSet<PathBuf>,
     stats: LspStats,
+    timing: Arc<LspTimingStats>,
 }
 
 impl AsyncLspResolver {
@@ -1095,12 +1259,18 @@ impl AsyncLspResolver {
             failed_servers: HashSet::new(),
             root: root.to_path_buf(),
             file_cache: HashMap::new(),
+            opened_files: HashSet::new(),
             stats: LspStats::default(),
+            timing: Arc::new(LspTimingStats::default()),
         }
     }
 
     pub fn stats(&self) -> &LspStats {
         &self.stats
+    }
+
+    pub fn timing_stats(&self) -> &LspTimingStats {
+        &self.timing
     }
 
     fn read_file(&mut self, path: &Path) -> Result<String> {
@@ -1174,6 +1344,7 @@ impl AsyncLspResolver {
         calls: &[&Call],
         index: &Index,
         concurrency: usize,
+        skip_hover: bool,
     ) -> Vec<(usize, ResolvedCall)> {
         let mut results = Vec::new();
         let mut requests_by_server: HashMap<String, Vec<(usize, &Call, PathBuf, String)>> =
@@ -1220,24 +1391,49 @@ impl AsyncLspResolver {
 
             let language_id = Self::language_id_for_ext(&ext);
 
+            let t_open_src = Instant::now();
             for (_, _, abs_path, content) in &server_calls {
-                let _ = client.open_file(abs_path, content, language_id).await;
+                if !self.opened_files.contains(abs_path) {
+                    let _ = client.open_file(abs_path, content, language_id).await;
+                    self.opened_files.insert(abs_path.clone());
+                    self.timing.add_open_source_file(0);
+                }
             }
+            self.timing.open_source_files_ms.fetch_add(
+                t_open_src.elapsed().as_millis() as u64,
+                Ordering::Relaxed,
+            );
 
+            let t_open_def = Instant::now();
+            let mut def_file_count = 0u64;
             for def in index.definitions() {
                 if let Some(def_ext) = def.file.extension().and_then(|e| e.to_str()) {
                     if Self::language_id_for_ext(def_ext) == language_id {
                         let def_path = self.root.join(&def.file);
-                        if let Ok(content) = self.read_file(&def_path) {
-                            let _ = client.open_file(&def_path, &content, language_id).await;
+                        if !self.opened_files.contains(&def_path) {
+                            if let Ok(content) = self.read_file(&def_path) {
+                                let _ = client.open_file(&def_path, &content, language_id).await;
+                                self.opened_files.insert(def_path);
+                                def_file_count += 1;
+                            }
                         }
                     }
                 }
             }
+            self.timing.open_def_files_ms.fetch_add(
+                t_open_def.elapsed().as_millis() as u64,
+                Ordering::Relaxed,
+            );
+            self.timing
+                .open_def_files_count
+                .fetch_add(def_file_count, Ordering::Relaxed);
 
             if !is_ready(&client) {
                 if let Some((_, _, abs_path, _)) = server_calls.first() {
+                    let t_ready = Instant::now();
                     let ready = client.wait_for_ready(abs_path, 60, &server_name).await;
+                    self.timing
+                        .add_wait_ready(t_ready.elapsed().as_millis() as u64);
                     set_ready(&client, true);
                     if !ready {
                         debug!(server = %server_name, "LSP not ready, continuing anyway");
@@ -1266,52 +1462,72 @@ impl AsyncLspResolver {
                 let callee = call.callee.clone();
                 let qualifier = call.qualifier.clone();
                 let line_content_owned = line_content.to_string();
+                let timing = self.timing.clone();
 
                 let handle = tokio::spawn(async move {
                     let _permit = permit;
 
-                    let signature = client_clone
-                        .hover(&abs_path_clone, start_line_idx as u32, col)
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|h| extract_signature(&h));
+                    let (signature, receiver_type) = if skip_hover {
+                        (None, None)
+                    } else {
+                        let t_hover = Instant::now();
+                        let sig = client_clone
+                            .hover(&abs_path_clone, start_line_idx as u32, col)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|h| extract_signature(&h));
+                        timing.add_hover(t_hover.elapsed().as_millis() as u64);
 
-                    let receiver_type = if let Some(ref q) = qualifier {
-                        if let Some(qualifier_col) = line_content_owned.find(q.as_str()) {
-                            client_clone
-                                .hover(&abs_path_clone, start_line_idx as u32, qualifier_col as u32)
-                                .await
-                                .ok()
-                                .flatten()
-                                .and_then(|h| extract_type(&h))
+                        let recv = if let Some(ref q) = qualifier {
+                            if let Some(qualifier_col) = line_content_owned.find(q.as_str()) {
+                                let t_hover2 = Instant::now();
+                                let result = client_clone
+                                    .hover(&abs_path_clone, start_line_idx as u32, qualifier_col as u32)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|h| extract_type(&h));
+                                timing.add_hover(t_hover2.elapsed().as_millis() as u64);
+                                result
+                            } else {
+                                None
+                            }
                         } else {
                             None
-                        }
-                    } else {
-                        None
+                        };
+
+                        (sig, recv)
                     };
 
+                    let t_goto = Instant::now();
                     let mut location = client_clone
                         .goto_definition(&abs_path_clone, start_line_idx as u32, col)
                         .await
                         .ok()
                         .flatten();
+                    timing.add_goto_definition(t_goto.elapsed().as_millis() as u64);
 
                     if let Some(loc) = location.take() {
                         let uri_str = loc.uri.as_str();
                         let is_declaration_file = is_declaration_file_uri(uri_str);
-                        
+
                         if is_declaration_file {
+                            let t_decl = Instant::now();
                             if let Some(decl_path) = uri_to_path(&loc.uri) {
                                 if let Ok(decl_content) = std::fs::read_to_string(&decl_path) {
-                                    let ext = decl_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                    let ext = decl_path
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or("");
                                     let lang_id = language_id_for_ext(ext);
-                                    let _ = client_clone.open_file(&decl_path, &decl_content, lang_id).await;
-                                    
+                                    let _ = client_clone
+                                        .open_file(&decl_path, &decl_content, lang_id)
+                                        .await;
+
                                     let decl_line = loc.range.start.line;
                                     let decl_char = loc.range.start.character;
-                                    
+
                                     if let Ok(Some(impl_loc)) = client_clone
                                         .goto_implementation(&decl_path, decl_line, decl_char)
                                         .await
@@ -1335,6 +1551,7 @@ impl AsyncLspResolver {
                             } else {
                                 location = Some(loc);
                             }
+                            timing.add_declaration_chase(t_decl.elapsed().as_millis() as u64);
                         } else {
                             location = Some(loc);
                         }
@@ -1467,5 +1684,3 @@ mod tests {
         assert!(!availability.is_empty());
     }
 }
-
-
