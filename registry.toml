@@ -711,6 +711,7 @@ import_query = """
 [language.lsp]
 binary = "nil"
 args = []
+cargo_crate = "nil"
 
 [[language]]
 name = "lua"
@@ -772,3 +773,13 @@ import_query = """
 [language.lsp]
 binary = "lua-language-server"
 args = []
+version = "3.16.4"
+url_template = "https://github.com/LuaLS/lua-language-server/releases/download/{version}/lua-language-server-{version}-{target}.tar.gz"
+archive = "tar.gz"
+binary_path = "bin/lua-language-server"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x64"
+"aarch64-unknown-linux-gnu" = "linux-arm64"
+"x86_64-apple-darwin" = "darwin-x64"
+"aarch64-apple-darwin" = "darwin-arm64"

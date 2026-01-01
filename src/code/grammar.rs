@@ -32,6 +32,7 @@ pub struct LspConfig {
     pub targets: std::collections::HashMap<String, String>,
     pub npm_package: Option<String>,
     pub go_package: Option<String>,
+    pub cargo_crate: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

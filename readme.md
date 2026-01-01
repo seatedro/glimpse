@@ -186,6 +186,46 @@ glimpse index status
 glimpse index build /path/to/project
 ```
 
+### Runtime Dependencies
+
+The code analysis features (`glimpse code`, `glimpse index`) require additional tools to be installed:
+
+#### Tree-sitter Grammars
+
+Glimpse automatically downloads and compiles tree-sitter grammars on first use. This requires:
+
+- **git** - to clone grammar repositories
+- **C compiler** (`cc`) - to compile parser.c
+- **C++ compiler** (`c++`) - to compile scanner.cc (some grammars)
+
+On most systems these are available via:
+- **macOS**: `xcode-select --install`
+- **Ubuntu/Debian**: `sudo apt install build-essential git`
+- **Fedora**: `sudo dnf install gcc gcc-c++ git`
+- **Arch**: `sudo pacman -S base-devel git`
+
+#### LSP Auto-Installation
+
+When using `--precise` mode, Glimpse uses Language Server Protocol (LSP) servers for accurate type-aware resolution. Glimpse will attempt to auto-install missing LSP servers using the following priority:
+
+1. **System PATH** - Use existing LSP if already installed
+2. **Cached binary** - Use previously downloaded/installed LSP
+3. **URL download** - Download pre-built binaries (e.g., lua-language-server, rust-analyzer)
+4. **Package managers** - Install via npm/bun, go, or cargo if configured
+
+For LSPs that don't provide pre-built binaries, auto-install requires the respective toolchain:
+
+| LSP | Install Method | Requirement |
+|-----|---------------|-------------|
+| lua-language-server | URL download | None |
+| rust-analyzer | URL download | None |
+| gopls | `go install` | Go toolchain |
+| pyright | `npm install` | npm or bun |
+| typescript-language-server | `npm install` | npm or bun |
+| nil (Nix) | `cargo install` | Rust toolchain |
+
+If auto-install fails, you'll see: `LSP server '<name>' not found. Install it manually.`
+
 ## CLI Reference
 
 ```

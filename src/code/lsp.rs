@@ -389,6 +389,45 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
     );
 }
 
+fn install_cargo_crate(lsp: &LspConfig) -> Result<PathBuf> {
+    let Some(ref crate_name) = lsp.cargo_crate else {
+        bail!("no cargo crate configured for {}", lsp.binary);
+    };
+
+    let cargo_path = which::which("cargo")
+        .context("cargo not found. Install Rust/Cargo or install the LSP manually")?;
+
+    let install_dir = lsp_dir();
+    fs::create_dir_all(&install_dir)?;
+
+    let status = Command::new(&cargo_path)
+        .args(["install", crate_name, "--root"])
+        .arg(&install_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to run cargo install")?;
+
+    if !status.success() {
+        bail!("cargo install failed for {}", crate_name);
+    }
+
+    let binary_path = install_dir.join("bin").join(&lsp.binary);
+    if binary_path.exists() {
+        let final_path = lsp_binary_path(lsp);
+        if binary_path != final_path {
+            fs::copy(&binary_path, &final_path)?;
+        }
+        return Ok(final_path);
+    }
+
+    bail!(
+        "cargo install succeeded but binary {} not found at {}",
+        lsp.binary,
+        binary_path.display()
+    );
+}
+
 fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let local_path = lsp_binary_path(lsp);
     if local_path.exists() {
@@ -413,6 +452,10 @@ fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
 
     if lsp.go_package.is_some() {
         return install_go_package(lsp);
+    }
+
+    if lsp.cargo_crate.is_some() {
+        return install_cargo_crate(lsp);
     }
 
     bail!(
@@ -719,6 +762,9 @@ pub fn check_lsp_availability() -> HashMap<String, LspAvailability> {
             } else if lsp.go_package.is_some() {
                 let go_available = which::which("go").is_ok();
                 (go_available, Some("go".to_string()))
+            } else if lsp.cargo_crate.is_some() {
+                let cargo_available = which::which("cargo").is_ok();
+                (cargo_available, Some("cargo".to_string()))
             } else {
                 (false, None)
             };
@@ -1613,6 +1659,7 @@ mod tests {
             targets: HashMap::new(),
             npm_package: None,
             go_package: None,
+            cargo_crate: None,
         };
 
         let path = lsp_binary_path(&lsp);
