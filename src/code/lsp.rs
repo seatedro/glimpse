@@ -1187,46 +1187,6 @@ impl AsyncLspClient {
         Ok(Some(content))
     }
 
-    async fn wait_for_ready(&self, _path: &Path, _max_attempts: u32, server_name: &str) -> bool {
-        debug!(server = %server_name, "waiting for LSP to be ready via progress tracking");
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        for _ in 0..60 {
-            let progress_count = {
-                let progress = self.inner.active_progress.lock().await;
-                progress.len()
-            };
-
-            if progress_count == 0 {
-                debug!(server = %server_name, "LSP ready (no active progress)");
-                return true;
-            }
-
-            trace!(server = %server_name, active = progress_count, "waiting for progress to complete");
-
-            let timeout = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                self.inner.progress_notify.notified(),
-            )
-            .await;
-
-            if timeout.is_ok() {
-                let remaining = {
-                    let progress = self.inner.active_progress.lock().await;
-                    progress.len()
-                };
-                if remaining == 0 {
-                    debug!(server = %server_name, "LSP ready (progress complete)");
-                    return true;
-                }
-            }
-        }
-
-        warn!(server = %server_name, "LSP wait timeout, proceeding anyway");
-        true
-    }
-
     async fn shutdown(&self) -> Result<()> {
         let _ = self.send_request("shutdown", json!(null)).await;
         let _ = self.send_notification("exit", json!(null)).await;
@@ -1373,6 +1333,10 @@ impl AsyncLspResolver {
                 .push((i, *call, abs_path, content));
         }
 
+        type TaskHandle = tokio::task::JoinHandle<(usize, String, Option<lsp_types::Location>, Option<String>, Option<String>, String)>;
+        let mut all_handles: Vec<TaskHandle> = Vec::new();
+        let global_semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
         for (server_name, server_calls) in requests_by_server {
             let ext = match server_calls.first() {
                 Some((_, call, _, _)) => call
@@ -1429,21 +1393,8 @@ impl AsyncLspResolver {
                 .fetch_add(def_file_count, Ordering::Relaxed);
 
             if !is_ready(&client) {
-                if let Some((_, _, abs_path, _)) = server_calls.first() {
-                    let t_ready = Instant::now();
-                    let ready = client.wait_for_ready(abs_path, 60, &server_name).await;
-                    self.timing
-                        .add_wait_ready(t_ready.elapsed().as_millis() as u64);
-                    set_ready(&client, true);
-                    if !ready {
-                        debug!(server = %server_name, "LSP not ready, continuing anyway");
-                    }
-                }
+                set_ready(&client, true);
             }
-
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-
-            let mut handles = Vec::new();
 
             for (call_idx, call, abs_path, content) in server_calls {
                 let lines: Vec<&str> = content.lines().collect();
@@ -1456,16 +1407,17 @@ impl AsyncLspResolver {
                 let line_content = lines[start_line_idx];
                 let col = line_content.find(&call.callee).unwrap_or(0) as u32;
 
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let semaphore = global_semaphore.clone();
                 let client_clone = client.clone();
                 let abs_path_clone = abs_path.clone();
                 let callee = call.callee.clone();
                 let qualifier = call.qualifier.clone();
                 let line_content_owned = line_content.to_string();
                 let timing = self.timing.clone();
+                let server_name_clone = server_name.clone();
 
                 let handle = tokio::spawn(async move {
-                    let _permit = permit;
+                    let _permit = semaphore.acquire_owned().await.unwrap();
 
                     let (signature, receiver_type) = if skip_hover {
                         (None, None)
@@ -1557,72 +1509,72 @@ impl AsyncLspResolver {
                         }
                     }
 
-                    (call_idx, callee, location, signature, receiver_type)
+                    (call_idx, callee, location, signature, receiver_type, server_name_clone)
                 });
 
-                handles.push(handle);
+                all_handles.push(handle);
             }
+        }
 
-            for handle in handles {
-                if let Ok((call_idx, callee, location, signature, receiver_type)) = handle.await {
-                    let location = match location {
-                        Some(loc) => loc,
+        for handle in all_handles {
+            if let Ok((call_idx, callee, location, signature, receiver_type, server_name)) = handle.await {
+                let location = match location {
+                    Some(loc) => loc,
+                    None => {
+                        trace!(callee = %callee, "no definition found");
+                        self.get_server_stats(&server_name).no_definition += 1;
+                        continue;
+                    }
+                };
+
+                let def_path = match uri_to_path(&location.uri) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                let rel_path = match def_path.strip_prefix(&self.root) {
+                    Ok(p) => p.to_path_buf(),
+                    Err(_) => {
+                        trace!(callee = %callee, path = %def_path.display(), "definition is external");
+                        self.get_server_stats(&server_name).external += 1;
+                        continue;
+                    }
+                };
+
+                let start_line = location.range.start.line as usize + 1;
+                let end_line = location.range.end.line as usize + 1;
+
+                let record = match index.get(&rel_path) {
+                    Some(r) => r,
+                    None => {
+                        trace!(callee = %callee, path = %rel_path.display(), "definition file not indexed");
+                        self.get_server_stats(&server_name).not_indexed += 1;
+                        continue;
+                    }
+                };
+
+                let def =
+                    match record.definitions.iter().find(|d| {
+                        d.span.start_line <= start_line && d.span.end_line >= end_line
+                    }) {
+                        Some(d) => d,
                         None => {
-                            trace!(callee = %callee, "no definition found");
-                            self.get_server_stats(&server_name).no_definition += 1;
+                            self.get_server_stats(&server_name).no_match += 1;
                             continue;
                         }
                     };
 
-                    let def_path = match uri_to_path(&location.uri) {
-                        Some(p) => p,
-                        None => continue,
-                    };
-
-                    let rel_path = match def_path.strip_prefix(&self.root) {
-                        Ok(p) => p.to_path_buf(),
-                        Err(_) => {
-                            trace!(callee = %callee, path = %def_path.display(), "definition is external");
-                            self.get_server_stats(&server_name).external += 1;
-                            continue;
-                        }
-                    };
-
-                    let start_line = location.range.start.line as usize + 1;
-                    let end_line = location.range.end.line as usize + 1;
-
-                    let record = match index.get(&rel_path) {
-                        Some(r) => r,
-                        None => {
-                            trace!(callee = %callee, path = %rel_path.display(), "definition file not indexed");
-                            self.get_server_stats(&server_name).not_indexed += 1;
-                            continue;
-                        }
-                    };
-
-                    let def =
-                        match record.definitions.iter().find(|d| {
-                            d.span.start_line <= start_line && d.span.end_line >= end_line
-                        }) {
-                            Some(d) => d,
-                            None => {
-                                self.get_server_stats(&server_name).no_match += 1;
-                                continue;
-                            }
-                        };
-
-                    self.get_server_stats(&server_name).resolved += 1;
-                    results.push((
-                        call_idx,
-                        ResolvedCall {
-                            target_file: rel_path,
-                            target_name: def.name.clone(),
-                            target_span: def.span.clone(),
-                            signature,
-                            receiver_type,
-                        },
-                    ));
-                }
+                self.get_server_stats(&server_name).resolved += 1;
+                results.push((
+                    call_idx,
+                    ResolvedCall {
+                        target_file: rel_path,
+                        target_name: def.name.clone(),
+                        target_span: def.span.clone(),
+                        signature,
+                        receiver_type,
+                    },
+                ));
             }
         }
 
