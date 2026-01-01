@@ -1023,6 +1023,9 @@ color = "#5e5086"
 definition_query = """
 (function
   name: (variable) @name) @function.definition
+
+(bind
+  name: (variable) @name) @function.definition
 """
 call_query = """
 (apply

@@ -116,8 +116,18 @@ pub fn fetch_grammar(lang: &LanguageEntry) -> Result<PathBuf> {
 
     let dest = sources.join(&lang.name);
 
-    if dest.exists() {
+    let src_dir = match &lang.subpath {
+        Some(subpath) => dest.join(subpath).join("src"),
+        None => dest.join("src"),
+    };
+    let is_valid = src_dir.join("parser.c").exists() || dest.join("grammar.js").exists();
+
+    if dest.exists() && is_valid {
         return Ok(dest);
+    }
+
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
     }
 
     Repository::clone(&lang.repo, &dest)
