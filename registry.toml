@@ -660,7 +660,6 @@ import_query = """
 [language.lsp]
 binary = "metals"
 args = []
-coursier_package = "metals"
 
 [[language]]
 name = "nix"
@@ -847,9 +846,8 @@ import_query = """
 """
 
 [language.lsp]
-binary = "solargraph"
-args = ["stdio"]
-gem_package = "solargraph"
+binary = "ruby-lsp"
+args = []
 
 [[language]]
 name = "csharp"
@@ -934,3 +932,120 @@ archive = "zip"
 "aarch64-unknown-linux-gnu" = "linux-arm64-net6.0"
 "x86_64-apple-darwin" = "osx-x64-net6.0"
 "aarch64-apple-darwin" = "osx-arm64-net6.0"
+
+[[language]]
+name = "kotlin"
+extensions = ["kt", "kts"]
+repo = "https://github.com/fwcd/tree-sitter-kotlin"
+branch = "main"
+symbol = "tree_sitter_kotlin"
+color = "#A97BFF"
+definition_query = """
+(
+  (multiline_comment)* @doc
+  .
+  (function_declaration
+    (simple_identifier) @name
+    (function_body)? @body) @function.definition
+)
+(
+  (multiline_comment)* @doc
+  .
+  (class_declaration
+    (type_identifier) @name
+    (class_body)? @body) @class.definition
+)
+"""
+call_query = """
+(call_expression
+  (simple_identifier) @name) @reference.call
+
+(call_expression
+  (navigation_expression
+    (navigation_suffix
+      (simple_identifier) @name))) @reference.call
+"""
+import_query = """
+(import_header
+  (identifier) @path) @import
+"""
+
+[language.lsp]
+binary = "kotlin-language-server"
+args = []
+version = "1.3.13"
+url_template = "https://github.com/fwcd/kotlin-language-server/releases/download/{version}/server.zip"
+archive = "zip"
+binary_path = "server/bin/kotlin-language-server"
+
+[[language]]
+name = "swift"
+extensions = ["swift"]
+repo = "https://github.com/alex-pinkus/tree-sitter-swift"
+branch = "main"
+symbol = "tree_sitter_swift"
+color = "#F05138"
+definition_query = """
+(function_declaration
+  name: (simple_identifier) @name) @function.definition
+
+(class_declaration
+  name: (type_identifier) @name) @class.definition
+
+(protocol_declaration
+  name: (type_identifier) @name) @interface.definition
+"""
+call_query = """
+(call_expression
+  (simple_identifier) @name) @reference.call
+
+(call_expression
+  (navigation_expression
+    (navigation_suffix
+      (simple_identifier) @name))) @reference.call
+"""
+import_query = """
+(import_declaration
+  (identifier) @path) @import
+"""
+
+[language.lsp]
+binary = "sourcekit-lsp"
+args = []
+
+[[language]]
+name = "haskell"
+extensions = ["hs"]
+repo = "https://github.com/tree-sitter/tree-sitter-haskell"
+branch = "master"
+symbol = "tree_sitter_haskell"
+color = "#5e5086"
+definition_query = """
+(function
+  name: (variable) @name) @function.definition
+"""
+call_query = """
+(apply
+  function: (variable) @name) @reference.call
+
+(apply
+  function: (qualified
+    (variable) @name)) @reference.call
+"""
+import_query = """
+(import
+  module: (module) @path) @import
+"""
+
+[language.lsp]
+binary = "haskell-language-server-wrapper"
+args = ["--lsp"]
+version = "2.9.0.1"
+url_template = "https://github.com/haskell/haskell-language-server/releases/download/{version}/haskell-language-server-{version}-{target}.tar.xz"
+archive = "tar.xz"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "x86_64-linux-unknown"
+"aarch64-unknown-linux-gnu" = "aarch64-linux-ubuntu2004"
+"x86_64-apple-darwin" = "x86_64-apple-darwin"
+"aarch64-apple-darwin" = "aarch64-apple-darwin"

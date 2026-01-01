@@ -187,10 +187,10 @@ To add support for a new programming language, you need to:
 
 ### Step 1: Find the Tree-Sitter Grammar
 
-Check the [tree-sitter wiki](https://github.com/tree-sitter/tree-sitter/wiki/List-of-parsers) for available parsers. Look for:
+**Always verify the grammar repo from the [tree-sitter wiki](https://github.com/tree-sitter/tree-sitter/wiki/List-of-parsers)** before using it. Look for:
 - Official parsers under `tree-sitter/` org
 - Community parsers under `tree-sitter-grammars/` org
-- Language-specific orgs (e.g., `nix-community/tree-sitter-nix`)
+- Language-specific orgs (e.g., `nix-community/tree-sitter-nix`, `fwcd/tree-sitter-kotlin`)
 
 Clone the grammar repo to examine its structure:
 
@@ -406,6 +406,11 @@ cargo run -- code path/to/file.ml:function_name --callers -d 2
 | cargo | `cargo_crate` | cargo | nil |
 
 If no install method is configured, users must install the LSP manually.
+
+Some LSPs are bundled with their language toolchain and cannot be auto-installed:
+- `ruby-lsp` - installed via `gem install ruby-lsp`
+- `sourcekit-lsp` - comes with Xcode/Swift toolchain
+- `metals` - installed via Coursier (`cs install metals`) or SDKMAN
 
 #### Configuration Options
 

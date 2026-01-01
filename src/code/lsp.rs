@@ -488,42 +488,6 @@ fn install_cargo_crate(lsp: &LspConfig) -> Result<PathBuf> {
     );
 }
 
-fn install_coursier_package(lsp: &LspConfig) -> Result<PathBuf> {
-    let Some(ref package) = lsp.coursier_package else {
-        bail!("no coursier package configured for {}", lsp.binary);
-    };
-
-    let cs_path =
-        which::which("cs").context("coursier (cs) not found. Install Coursier or install the LSP manually")?;
-
-    let install_dir = lsp_dir();
-    fs::create_dir_all(&install_dir)?;
-
-    let status = Command::new(&cs_path)
-        .args(["install", "--install-dir"])
-        .arg(&install_dir)
-        .arg(package)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("failed to run cs install")?;
-
-    if !status.success() {
-        bail!("cs install failed for {}", package);
-    }
-
-    let binary_path = install_dir.join(&lsp.binary);
-    if binary_path.exists() {
-        return Ok(binary_path);
-    }
-
-    bail!(
-        "cs install succeeded but binary {} not found at {}",
-        lsp.binary,
-        binary_path.display()
-    );
-}
-
 fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     let local_path = lsp_binary_path(lsp);
     if local_path.exists() {
@@ -552,10 +516,6 @@ fn find_lsp_binary(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
 
     if lsp.cargo_crate.is_some() {
         return install_cargo_crate(lsp);
-    }
-
-    if lsp.coursier_package.is_some() {
-        return install_coursier_package(lsp);
     }
 
     bail!(
@@ -865,9 +825,6 @@ pub fn check_lsp_availability() -> HashMap<String, LspAvailability> {
             } else if lsp.cargo_crate.is_some() {
                 let cargo_available = which::which("cargo").is_ok();
                 (cargo_available, Some("cargo".to_string()))
-            } else if lsp.coursier_package.is_some() {
-                let cs_available = which::which("cs").is_ok();
-                (cs_available, Some("coursier".to_string()))
             } else {
                 (false, None)
             };
@@ -1763,7 +1720,6 @@ mod tests {
             npm_package: None,
             go_package: None,
             cargo_crate: None,
-            coursier_package: None,
             latest_txt_url: None,
         };
 

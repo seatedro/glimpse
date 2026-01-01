@@ -33,7 +33,6 @@ pub struct LspConfig {
     pub npm_package: Option<String>,
     pub go_package: Option<String>,
     pub cargo_crate: Option<String>,
-    pub coursier_package: Option<String>,
     pub latest_txt_url: Option<String>,
 }
 
