@@ -711,3 +711,64 @@ import_query = """
 [language.lsp]
 binary = "nil"
 args = []
+
+[[language]]
+name = "lua"
+extensions = ["lua"]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-lua"
+branch = "master"
+symbol = "tree_sitter_lua"
+color = "#000080"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (function_declaration
+    name: [
+      (identifier) @name
+      (dot_index_expression
+        field: (identifier) @name)
+      (method_index_expression
+        method: (identifier) @name)
+    ]
+    body: (block) @body) @function.definition
+)
+
+(variable_declaration
+  (assignment_statement
+    (variable_list
+      name: (identifier) @name)
+    (expression_list
+      value: (function_definition
+        body: (block) @body)))) @function.definition
+
+(table_constructor
+  (field
+    name: (identifier) @name
+    value: (function_definition
+      body: (block) @body))) @function.definition
+"""
+call_query = """
+(function_call
+  name: [
+    (identifier) @name
+    (dot_index_expression
+      table: (_) @qualifier
+      field: (identifier) @name)
+    (method_index_expression
+      table: (_) @qualifier
+      method: (identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(function_call
+  name: (identifier) @_fn
+  arguments: (arguments
+    (string
+      content: (string_content) @path))
+  (#any-of? @_fn "require" "dofile" "loadfile")) @import
+"""
+
+[language.lsp]
+binary = "lua-language-server"
+args = []
