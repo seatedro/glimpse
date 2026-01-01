@@ -789,3 +789,148 @@ binary_path = "bin/lua-language-server"
 "aarch64-unknown-linux-gnu" = "linux-arm64"
 "x86_64-apple-darwin" = "darwin-x64"
 "aarch64-apple-darwin" = "darwin-arm64"
+
+[[language]]
+name = "ruby"
+extensions = ["rb", "rake", "gemspec", "ru"]
+repo = "https://github.com/tree-sitter/tree-sitter-ruby"
+branch = "master"
+symbol = "tree_sitter_ruby"
+color = "#701516"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (method
+    name: (_) @name
+    body: (_)? @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (singleton_method
+    name: (_) @name
+    body: (_)? @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (class
+    name: [
+      (constant) @name
+      (scope_resolution name: (_) @name)
+    ]
+    body: (_)? @body) @class.definition
+)
+(
+  (comment)* @doc
+  .
+  (module
+    name: [
+      (constant) @name
+      (scope_resolution name: (_) @name)
+    ]
+    body: (_)? @body) @module.definition
+)
+"""
+call_query = """
+(call
+  receiver: (_)? @qualifier
+  method: (identifier) @name) @reference.call
+"""
+import_query = """
+(call
+  method: (identifier) @_method
+  arguments: (argument_list
+    (string (string_content) @path))
+  (#any-of? @_method "require" "require_relative" "load")) @import
+"""
+
+[language.lsp]
+binary = "solargraph"
+args = ["stdio"]
+gem_package = "solargraph"
+
+[[language]]
+name = "csharp"
+extensions = ["cs", "csx"]
+repo = "https://github.com/tree-sitter/tree-sitter-c-sharp"
+branch = "master"
+symbol = "tree_sitter_c_sharp"
+color = "#178600"
+definition_query = """
+(
+  (comment)* @doc
+  .
+  (method_declaration
+    name: (identifier) @name
+    body: (block) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (local_function_statement
+    name: (identifier) @name
+    body: (block) @body) @function.definition
+)
+(
+  (comment)* @doc
+  .
+  (constructor_declaration
+    name: (identifier) @name
+    body: (block) @body) @method.definition
+)
+(
+  (comment)* @doc
+  .
+  (class_declaration
+    name: (identifier) @name
+    body: (declaration_list) @body) @class.definition
+)
+(
+  (comment)* @doc
+  .
+  (interface_declaration
+    name: (identifier) @name
+    body: (declaration_list) @body) @interface.definition
+)
+"""
+call_query = """
+(invocation_expression
+  function: [
+    (identifier) @name
+    (member_access_expression
+      expression: (_) @qualifier
+      name: (identifier) @name)
+  ]) @reference.call
+
+(object_creation_expression
+  type: [
+    (identifier) @name
+    (qualified_name
+      qualifier: (_) @qualifier
+      name: (identifier) @name)
+    (generic_name
+      (identifier) @name)
+  ]) @reference.call
+"""
+import_query = """
+(using_directive
+  [
+    (identifier) @path
+    (qualified_name) @path
+  ]) @import
+"""
+
+[language.lsp]
+binary = "OmniSharp"
+args = ["-lsp"]
+version = "v1.39.13"
+url_template = "https://github.com/OmniSharp/omnisharp-roslyn/releases/download/{version}/omnisharp-{target}.zip"
+archive = "zip"
+
+[language.lsp.targets]
+"x86_64-unknown-linux-gnu" = "linux-x64-net6.0"
+"aarch64-unknown-linux-gnu" = "linux-arm64-net6.0"
+"x86_64-apple-darwin" = "osx-x64-net6.0"
+"aarch64-apple-darwin" = "osx-arm64-net6.0"
