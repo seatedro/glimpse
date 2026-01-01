@@ -98,6 +98,25 @@ fn import_to_file_patterns(module_path: &str, lang: &str) -> Vec<String> {
     }
 }
 
+fn extensions_compatible(ext1: &str, ext2: &str) -> bool {
+    if ext1 == ext2 {
+        return true;
+    }
+
+    let family = |ext: &str| -> u8 {
+        match ext {
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => 1,
+            "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hxx" => 2,
+            "scala" | "sc" => 3,
+            _ => 0,
+        }
+    };
+
+    let f1 = family(ext1);
+    let f2 = family(ext2);
+    f1 != 0 && f1 == f2
+}
+
 fn import_matches_callee(module_path: &str, callee: &str, lang: &str) -> bool {
     let clean = module_path.trim_matches(|c| c == '"' || c == '\'' || c == '<' || c == '>');
 
@@ -128,14 +147,14 @@ fn import_matches_callee(module_path: &str, callee: &str, lang: &str) -> bool {
 struct FilePatternIndex {
     by_filename: HashMap<String, Vec<PathBuf>>,
     by_suffix: HashMap<String, Vec<PathBuf>>,
-    by_def_name: HashMap<String, Definition>,
+    by_def_name: HashMap<String, Vec<Definition>>,
 }
 
 impl FilePatternIndex {
     fn build(index: &Index) -> Self {
         let mut by_filename: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let mut by_suffix: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        let mut by_def_name: HashMap<String, Definition> = HashMap::new();
+        let mut by_def_name: HashMap<String, Vec<Definition>> = HashMap::new();
 
         for path in index.files.keys() {
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
@@ -156,7 +175,8 @@ impl FilePatternIndex {
         for def in index.definitions() {
             by_def_name
                 .entry(def.name.clone())
-                .or_insert_with(|| def.clone());
+                .or_default()
+                .push(def.clone());
         }
 
         Self {
@@ -180,8 +200,16 @@ impl FilePatternIndex {
         }
     }
 
-    fn definition_by_name(&self, name: &str) -> Option<Definition> {
-        self.by_def_name.get(name).cloned()
+    fn definition_by_name(&self, name: &str, from_file: &Path) -> Option<Definition> {
+        let defs = self.by_def_name.get(name)?;
+        let from_ext = from_file.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        defs.iter()
+            .find(|d| {
+                let def_ext = d.file.extension().and_then(|e| e.to_str()).unwrap_or("");
+                extensions_compatible(from_ext, def_ext)
+            })
+            .cloned()
     }
 }
 
@@ -232,7 +260,7 @@ impl<'a> Resolver<'a> {
         }
 
         if !self.strict {
-            return self.resolve_by_index(callee);
+            return self.resolve_by_index(callee, from_file);
         }
 
         None
@@ -247,8 +275,8 @@ impl<'a> Resolver<'a> {
             .cloned()
     }
 
-    fn resolve_by_index(&self, callee: &str) -> Option<Definition> {
-        self.pattern_index.definition_by_name(callee)
+    fn resolve_by_index(&self, callee: &str, from_file: &Path) -> Option<Definition> {
+        self.pattern_index.definition_by_name(callee, from_file)
     }
 
     fn resolve_via_imports(&self, callee: &str, from_file: &Path) -> Option<Definition> {
@@ -495,5 +523,86 @@ mod tests {
         assert!(patterns
             .iter()
             .any(|p| p.contains("components/Button/index.ts")));
+    }
+
+    #[test]
+    fn test_resolve_ignores_cross_language_definitions() {
+        let mut index = Index::new();
+        let nix_file = PathBuf::from("config.nix");
+        let cpp_file = PathBuf::from("src/filter.cpp");
+
+        index.update(FileRecord {
+            path: cpp_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![make_def("filter", "src/filter.cpp")],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        index.update(FileRecord {
+            path: nix_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let resolver = Resolver::new(&index);
+
+        // Should NOT find cpp definition when resolving from nix file
+        let found = resolver.resolve("filter", None, &nix_file);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_resolve_allows_same_language_family() {
+        let mut index = Index::new();
+        let ts_file = PathBuf::from("src/app.ts");
+        let tsx_file = PathBuf::from("src/component.tsx");
+
+        index.update(FileRecord {
+            path: tsx_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![make_def("Button", "src/component.tsx")],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        index.update(FileRecord {
+            path: ts_file.clone(),
+            mtime: 0,
+            size: 0,
+            definitions: vec![],
+            calls: vec![],
+            imports: vec![],
+        });
+
+        let resolver = Resolver::new(&index);
+
+        // Should find tsx definition when resolving from ts file (same family)
+        let found = resolver.resolve("Button", None, &ts_file);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().file, tsx_file);
+    }
+
+    #[test]
+    fn test_extensions_compatible() {
+        // Same extension
+        assert!(extensions_compatible("rs", "rs"));
+        assert!(extensions_compatible("py", "py"));
+
+        // Same family
+        assert!(extensions_compatible("ts", "tsx"));
+        assert!(extensions_compatible("js", "jsx"));
+        assert!(extensions_compatible("c", "h"));
+        assert!(extensions_compatible("cpp", "hpp"));
+
+        // Different languages
+        assert!(!extensions_compatible("rs", "py"));
+        assert!(!extensions_compatible("nix", "cpp"));
+        assert!(!extensions_compatible("go", "java"));
     }
 }
