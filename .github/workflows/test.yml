@@ -15,18 +15,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Cache Nix store
+        uses: cachix/cachix-action@v15
+        with:
+          name: nix-community
+          skipPush: true
+
       - name: Run tests
-        run: cargo test --verbose
-        
+        run: nix develop --command cargo test --verbose
+
       - name: Run clippy
-        run: cargo clippy -- -D warnings
-        
+        run: nix develop --command cargo clippy -- -D warnings
+
       - name: Check formatting
-        run: cargo fmt -- --check 
+        run: nix develop --command cargo fmt -- --check
