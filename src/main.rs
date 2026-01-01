@@ -646,7 +646,7 @@ fn handle_index_command(cmd: &IndexCommand) -> Result<()> {
 
 const INDEX_CHUNK_SIZE: usize = 256;
 
-type CacheKey = (String, Option<String>, PathBuf);
+type CacheKey = (String, Option<String>, String);
 
 fn resolve_calls_with_lsp(
     root: &Path,
@@ -673,14 +673,11 @@ fn resolve_calls_with_lsp(
     let (resolved, stats, cache_hits, cache_misses, timing) = rt.block_on(async {
         let mut resolver = AsyncLspResolver::new(root);
         let mut cache: HashMap<CacheKey, Option<ResolvedCall>> = HashMap::new();
-        let mut cache_hits = 0usize;
-        let mut cache_misses = 0usize;
         let mut total_resolved = 0usize;
 
-        // Collect ALL unresolved calls from ALL files upfront
-        // (file_path, call_idx, call, cache_key)
-        let mut all_calls: Vec<(PathBuf, usize, glimpse::code::index::Call, CacheKey)> = Vec::new();
-        let mut cached_resolutions: Vec<(PathBuf, usize, ResolvedCall)> = Vec::new();
+        // Group calls by cache_key - only resolve ONE per unique key
+        // calls_by_key: cache_key -> (representative call, list of (file_path, call_idx) to update)
+        let mut calls_by_key: HashMap<CacheKey, (glimpse::code::index::Call, Vec<(PathBuf, usize)>)> = HashMap::new();
 
         for (file_path, record) in &index.files {
             for (call_idx, call) in record.calls.iter().enumerate() {
@@ -688,63 +685,63 @@ fn resolve_calls_with_lsp(
                     continue;
                 }
 
+                let ext = call.file.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
                 let cache_key: CacheKey = (
                     call.callee.clone(),
                     call.qualifier.clone(),
-                    call.file.clone(),
+                    ext,
                 );
 
-                if let Some(cached_result) = cache.get(&cache_key) {
-                    cache_hits += 1;
-                    if let Some(resolved_call) = cached_result.clone() {
-                        cached_resolutions.push((file_path.clone(), call_idx, resolved_call));
-                    }
-                } else {
-                    cache_misses += 1;
-                    all_calls.push((file_path.clone(), call_idx, call.clone(), cache_key));
-                }
+                calls_by_key
+                    .entry(cache_key)
+                    .or_insert_with(|| (call.clone(), Vec::new()))
+                    .1
+                    .push((file_path.clone(), call_idx));
             }
         }
 
-        // Resolve all calls in ONE batch
-        if !all_calls.is_empty() {
-            let call_refs: Vec<_> = all_calls.iter().map(|(_, _, c, _)| c).collect();
+        let unique_calls: Vec<_> = calls_by_key.keys().cloned().collect();
+        let dedup_count = unique_calls.len();
+        let total_call_count: usize = calls_by_key.values().map(|(_, locs)| locs.len()).sum();
+
+        // Resolve only unique calls
+        if !calls_by_key.is_empty() {
+            let calls_to_resolve: Vec<_> = unique_calls.iter()
+                .map(|k| &calls_by_key.get(k).unwrap().0)
+                .collect();
             let skip_hover = true;
             let results = resolver
-                .resolve_calls_batch(&call_refs, index, concurrency, skip_hover)
+                .resolve_calls_batch(&calls_to_resolve, index, concurrency, skip_hover)
                 .await;
 
             for (batch_idx, resolved_call) in results {
-                let (file_path, call_idx, call, cache_key) = &all_calls[batch_idx];
+                let cache_key = &unique_calls[batch_idx];
                 cache.insert(cache_key.clone(), Some(resolved_call.clone()));
 
-                progress.resolving_call(&call.file, &resolved_call.target_name);
+                if let Some((call, locations)) = calls_by_key.get(cache_key) {
+                    progress.resolving_call(&call.file, &resolved_call.target_name);
 
-                if let Some(record) = index.files.get_mut(file_path) {
-                    if *call_idx < record.calls.len() {
-                        record.calls[*call_idx].resolved = Some(resolved_call);
-                        total_resolved += 1;
+                    for (file_path, call_idx) in locations {
+                        if let Some(record) = index.files.get_mut(file_path) {
+                            if *call_idx < record.calls.len() {
+                                record.calls[*call_idx].resolved = Some(resolved_call.clone());
+                                total_resolved += 1;
+                            }
+                        }
                     }
                 }
             }
 
             // Mark unresolved calls in cache as None
-            for (_, _, _, cache_key) in &all_calls {
+            for cache_key in &unique_calls {
                 if !cache.contains_key(cache_key) {
                     cache.insert(cache_key.clone(), None);
                 }
             }
         }
 
-        // Apply cached resolutions
-        for (file_path, call_idx, resolved_call) in cached_resolutions {
-            if let Some(record) = index.files.get_mut(&file_path) {
-                if call_idx < record.calls.len() {
-                    record.calls[call_idx].resolved = Some(resolved_call);
-                    total_resolved += 1;
-                }
-            }
-        }
+        let cache_hits = total_call_count.saturating_sub(dedup_count);
+        let cache_misses = dedup_count;
 
         resolver.shutdown_all().await;
         let stats = resolver.stats().clone();
