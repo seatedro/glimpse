@@ -16,7 +16,7 @@ use lsp_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::grammar::{lsp_dir, LspConfig, Registry};
 use super::index::{Call, Index, ResolvedCall};
@@ -186,14 +186,15 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
     }
 
     let total_size = response.content_length().unwrap_or(0);
+    info!(binary = %lsp.binary, size_mb = total_size as f64 / 1024.0 / 1024.0, "downloading LSP server");
+
     let pb = ProgressBar::new(total_size);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) downloading {msg}")
+            .template("  [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
             .expect("valid template")
-            .progress_chars("#>-"),
+            .progress_chars("━━─"),
     );
-    pb.set_message(lsp.binary.clone());
 
     let mut bytes = Vec::new();
     let mut reader = response;
@@ -207,6 +208,8 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
         pb.set_position(bytes.len() as u64);
     }
     pb.finish_and_clear();
+    info!(binary = %lsp.binary, "extracting LSP server");
+
     let archive_type = lsp.archive.as_deref().unwrap_or("gz");
 
     let final_path = lsp_binary_path(lsp);
@@ -328,7 +331,7 @@ fn download_and_extract(lsp: &LspConfig, root: &Path) -> Result<PathBuf> {
         fs::set_permissions(&final_path, perms)?;
     }
 
-    eprintln!("Installed {} to {}", lsp.binary, final_path.display());
+    info!(binary = %lsp.binary, path = %final_path.display(), "installed LSP server");
     Ok(final_path)
 }
 
@@ -344,6 +347,8 @@ fn install_npm_package(lsp: &LspConfig) -> Result<PathBuf> {
     } else {
         bail!("neither bun nor npm found. Install one of them or install the LSP manually");
     };
+
+    info!(binary = %lsp.binary, pkg_manager = %pkg_manager, "installing LSP server via package manager");
 
     let pkg_dir = lsp_dir().join(format!("{}-pkg", &lsp.binary));
     fs::create_dir_all(&pkg_dir)?;
@@ -422,6 +427,8 @@ fn install_go_package(lsp: &LspConfig) -> Result<PathBuf> {
     let go_path =
         which::which("go").context("go not found. Install Go or install the LSP manually")?;
 
+    info!(binary = %lsp.binary, "installing LSP server via go install");
+
     let install_dir = lsp_dir();
     fs::create_dir_all(&install_dir)?;
 
@@ -456,6 +463,8 @@ fn install_cargo_crate(lsp: &LspConfig) -> Result<PathBuf> {
 
     let cargo_path = which::which("cargo")
         .context("cargo not found. Install Rust/Cargo or install the LSP manually")?;
+
+    info!(binary = %lsp.binary, "installing LSP server via cargo install");
 
     let install_dir = lsp_dir();
     fs::create_dir_all(&install_dir)?;
@@ -1098,10 +1107,38 @@ impl AsyncLspClient {
 
         self.send_message(&msg).await?;
 
-        match rx.await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(e)) => bail!("{}", e),
-            Err(_) => bail!("LSP response channel closed"),
+        self.await_response(rx, std::time::Duration::from_secs(30)).await
+    }
+
+    async fn send_request_with_timeout(&self, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value> {
+        let id = self.next_id();
+        let (tx, rx) = oneshot::channel();
+
+        {
+            let mut pending = self.inner.pending.lock().await;
+            pending.insert(id, tx);
+        }
+
+        let msg = LspMessage {
+            jsonrpc: "2.0".to_string(),
+            id: Some(LspId::Int(id)),
+            method: Some(method.to_string()),
+            params: Some(params),
+            result: None,
+            error: None,
+        };
+
+        self.send_message(&msg).await?;
+        self.await_response(rx, timeout).await
+    }
+
+    async fn await_response(&self, rx: oneshot::Receiver<Result<Value, String>>, timeout: std::time::Duration) -> Result<Value> {
+        let result = tokio::time::timeout(timeout, rx).await;
+        match result {
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(e))) => bail!("{}", e),
+            Ok(Err(_)) => bail!("LSP response channel closed"),
+            Err(_) => bail!("LSP request timed out after {}s", timeout.as_secs()),
         }
     }
 
@@ -1153,8 +1190,11 @@ impl AsyncLspClient {
             ..Default::default()
         };
 
-        self.send_request("initialize", serde_json::to_value(params)?)
-            .await?;
+        self.send_request_with_timeout(
+            "initialize",
+            serde_json::to_value(params)?,
+            std::time::Duration::from_secs(300),
+        ).await?;
         self.send_notification("initialized", serde_json::to_value(InitializedParams {})?)
             .await?;
 
@@ -1297,6 +1337,40 @@ impl AsyncLspClient {
         let _ = self.send_request("shutdown", json!(null)).await;
         let _ = self.send_notification("exit", json!(null)).await;
         Ok(())
+    }
+
+    async fn wait_for_progress(&self, timeout: std::time::Duration) -> bool {
+        let start = Instant::now();
+        let mut stable_since: Option<Instant> = None;
+        let stable_duration = std::time::Duration::from_millis(500);
+
+        loop {
+            let is_empty = {
+                let progress = self.inner.active_progress.lock().await;
+                progress.is_empty()
+            };
+
+            if is_empty {
+                match stable_since {
+                    Some(since) if since.elapsed() >= stable_duration => return true,
+                    None => stable_since = Some(Instant::now()),
+                    _ => {}
+                }
+            } else {
+                stable_since = None;
+            }
+
+            if start.elapsed() > timeout {
+                return false;
+            }
+
+            tokio::select! {
+                _ = self.inner.progress_notify.notified() => {
+                    stable_since = None;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        }
     }
 }
 
@@ -1460,6 +1534,13 @@ impl AsyncLspResolver {
             };
 
             let language_id = Self::language_id_for_ext(&ext);
+            let file_count = server_calls.len();
+            info!(
+                server = %server_name,
+                language = %language_id,
+                file_count,
+                "opening files for LSP"
+            );
 
             let t_open_src = Instant::now();
             for (_, _, abs_path, content) in &server_calls {
@@ -1499,8 +1580,21 @@ impl AsyncLspResolver {
                 .fetch_add(def_file_count, Ordering::Relaxed);
 
             if !is_ready(&client) {
+                info!(server = %server_name, "waiting for LSP to index project");
+                let timeout = std::time::Duration::from_secs(300);
+                if client.wait_for_progress(timeout).await {
+                    info!(server = %server_name, "LSP ready");
+                } else {
+                    warn!(server = %server_name, "LSP still indexing, proceeding anyway");
+                }
                 set_ready(&client, true);
             }
+
+            info!(
+                server = %server_name,
+                call_count = server_calls.len(),
+                "resolving calls via LSP"
+            );
 
             for (call_idx, call, abs_path, content) in server_calls {
                 let lines: Vec<&str> = content.lines().collect();
