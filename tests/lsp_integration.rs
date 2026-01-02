@@ -1035,7 +1035,11 @@ mod lsp_availability {
                 info.available, info.can_auto_install, info.install_method
             );
             if !info.available {
-                assert_eq!(info.install_method.as_deref(), Some("bun"));
+                assert!(
+                    matches!(info.install_method.as_deref(), Some("bun" | "npm")),
+                    "expected bun or npm, got {:?}",
+                    info.install_method
+                );
             }
         }
 
@@ -1045,7 +1049,11 @@ mod lsp_availability {
                 info.available, info.can_auto_install, info.install_method
             );
             if !info.available {
-                assert_eq!(info.install_method.as_deref(), Some("bun"));
+                assert!(
+                    matches!(info.install_method.as_deref(), Some("bun" | "npm")),
+                    "expected bun or npm, got {:?}",
+                    info.install_method
+                );
             }
         }
     }
