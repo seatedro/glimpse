@@ -253,42 +253,6 @@ binary_path = "clangd_{version}/bin/clangd"
 "x86_64-pc-windows-msvc" = "windows-x86_64"
 
 [[language]]
-name = "bash"
-extensions = ["sh", "bash"]
-repo = "https://github.com/tree-sitter/tree-sitter-bash"
-branch = "master"
-symbol = "tree_sitter_bash"
-color = "#89e051"
-definition_query = """
-(
-  (comment)* @doc
-  .
-  (function_definition
-    name: (word) @name
-    body: (compound_statement) @body) @function.definition
-)
-"""
-call_query = """
-(command_name (word) @name) @reference.call
-"""
-import_query = """
-(command
-  name: (command_name) @_cmd
-  argument: [
-    (word) @path
-    (string) @path
-    (raw_string) @path
-    (concatenation) @path
-  ]
-  (#any-of? @_cmd "source" ".")) @import
-"""
-
-[language.lsp]
-binary = "bash-language-server"
-args = ["start"]
-npm_package = "bash-language-server"
-
-[[language]]
 name = "python"
 extensions = ["py"]
 repo = "https://github.com/tree-sitter/tree-sitter-python"

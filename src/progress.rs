@@ -55,21 +55,22 @@ impl ProgressContext {
         self.bar.inc(1);
     }
 
-    pub fn resolving_call(&self, source: &Path, target: &str) {
-        let ext = source.extension().and_then(|e| e.to_str());
-        let colored = self.colorize_path(source, ext);
-        let truncated = self.truncate_path(&colored, source);
+    pub fn lsp_warming(&self, server: &str) {
+        self.bar.set_message(format!("Warming up {}...", server));
+    }
+
+    pub fn lsp_resolving(&self, server: &str, file: &Path, target: &str) {
+        let ext = file.extension().and_then(|e| e.to_str());
+        let colored = self.colorize_path(file, ext);
+        let truncated = self.truncate_path(&colored, file);
         self.bar.set_message(format!(
-            "Resolving: {} {} {}",
+            "{} {} {} {}",
+            style(server).cyan(),
             truncated,
             style("->").dim(),
             target
         ));
         self.bar.inc(1);
-    }
-
-    pub fn lsp_warming(&self, server: &str) {
-        self.bar.set_message(format!("Warming up {}...", server));
     }
 
     pub fn scanning(&self) {

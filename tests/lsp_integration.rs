@@ -54,7 +54,9 @@ async fn resolve_call(
     index: &Index,
 ) -> Option<String> {
     let calls: Vec<&Call> = vec![call];
-    let results = resolver.resolve_calls_batch(&calls, index, 1, true).await;
+    let results = resolver
+        .resolve_calls_batch(&calls, index, 1, true, |_, _, _: &str| {})
+        .await;
     results
         .first()
         .map(|(_, resolved)| resolved.target_name.clone())

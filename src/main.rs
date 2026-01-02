@@ -711,16 +711,16 @@ fn resolve_calls_with_lsp(
                 .collect();
             let skip_hover = true;
             let results = resolver
-                .resolve_calls_batch(&calls_to_resolve, index, concurrency, skip_hover)
+                .resolve_calls_batch(&calls_to_resolve, index, concurrency, skip_hover, |server, file, callee| {
+                    progress.lsp_resolving(server, file, callee);
+                })
                 .await;
 
             for (batch_idx, resolved_call) in results {
                 let cache_key = &unique_calls[batch_idx];
                 cache.insert(cache_key.clone(), Some(resolved_call.clone()));
 
-                if let Some((call, locations)) = calls_by_key.get(cache_key) {
-                    progress.resolving_call(&call.file, &resolved_call.target_name);
-
+                if let Some((_call, locations)) = calls_by_key.get(cache_key) {
                     for (file_path, call_idx) in locations {
                         if let Some(record) = index.files.get_mut(file_path) {
                             if *call_idx < record.calls.len() {

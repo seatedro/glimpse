@@ -87,6 +87,35 @@ fn is_declaration_file_uri(uri: &str) -> bool {
     matches!(ext, "h" | "hpp" | "hxx" | "hh")
 }
 
+fn should_skip_for_lsp(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    
+    const SKIP_DIRS: &[&str] = &[
+        "vendor/",
+        "vendors/",
+        "third_party/",
+        "third-party/",
+        "thirdparty/",
+        "external/",
+        "externals/",
+        "deps/",
+        "node_modules/",
+        ".git/",
+        "dist/",
+        "build/",
+        "out/",
+        "__pycache__/",
+    ];
+    
+    for dir in SKIP_DIRS {
+        if path_str.contains(dir) {
+            return true;
+        }
+    }
+    
+    false
+}
+
 fn detect_zig_version_from_zon(root: &Path) -> Option<String> {
     let zon_path = root.join("build.zig.zon");
     let content = fs::read_to_string(zon_path).ok()?;
@@ -969,13 +998,25 @@ impl AsyncLspClient {
                                 }
                             }
                         }
-                        Ok(None) => break,
+                        Ok(None) => {
+                            warn!("LSP process closed stdout");
+                            break;
+                        }
                         Err(e) => {
                             warn!(error = ?e, "error reading LSP message");
                             break;
                         }
                     }
                 }
+            }
+        }
+        
+        let mut pending = inner.pending.lock().await;
+        let count = pending.len();
+        if count > 0 {
+            warn!(count, "LSP died, failing pending requests");
+            for (_, tx) in pending.drain() {
+                let _ = tx.send(Err("LSP process died".to_string()));
             }
         }
     }
@@ -1386,7 +1427,7 @@ pub struct AsyncLspResolver {
     clients: HashMap<String, AsyncLspClient>,
     failed_servers: HashSet<String>,
     root: PathBuf,
-    file_cache: HashMap<PathBuf, String>,
+
     opened_files: HashSet<PathBuf>,
     stats: LspStats,
     timing: Arc<LspTimingStats>,
@@ -1398,7 +1439,7 @@ impl AsyncLspResolver {
             clients: HashMap::new(),
             failed_servers: HashSet::new(),
             root: root.to_path_buf(),
-            file_cache: HashMap::new(),
+
             opened_files: HashSet::new(),
             stats: LspStats::default(),
             timing: Arc::new(LspTimingStats::default()),
@@ -1411,18 +1452,6 @@ impl AsyncLspResolver {
 
     pub fn timing_stats(&self) -> &LspTimingStats {
         &self.timing
-    }
-
-    fn read_file(&mut self, path: &Path) -> Result<String> {
-        if let Some(content) = self.file_cache.get(path) {
-            return Ok(content.clone());
-        }
-
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-
-        self.file_cache.insert(path.to_path_buf(), content.clone());
-        Ok(content)
     }
 
     fn language_id_for_ext(ext: &str) -> &'static str {
@@ -1479,18 +1508,29 @@ impl AsyncLspResolver {
         Ok(self.clients.get(&key).unwrap())
     }
 
-    pub async fn resolve_calls_batch(
+    pub async fn resolve_calls_batch<F>(
         &mut self,
         calls: &[&Call],
         index: &Index,
         concurrency: usize,
         skip_hover: bool,
-    ) -> Vec<(usize, ResolvedCall)> {
+        mut on_progress: F,
+    ) -> Vec<(usize, ResolvedCall)>
+    where
+        F: FnMut(&str, &Path, &str),
+    {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use std::pin::Pin;
+
         let mut results = Vec::new();
-        let mut requests_by_server: HashMap<String, Vec<(usize, &Call, PathBuf, String)>> =
-            HashMap::new();
+
+        let mut requests_by_server: HashMap<String, Vec<(usize, &Call, PathBuf)>> = HashMap::new();
 
         for (i, call) in calls.iter().enumerate() {
+            if should_skip_for_lsp(&call.file) {
+                continue;
+            }
+
             let ext = match call.file.extension().and_then(|e| e.to_str()) {
                 Some(e) => e.to_string(),
                 None => continue,
@@ -1502,24 +1542,32 @@ impl AsyncLspResolver {
             };
 
             let abs_path = self.root.join(&call.file);
-            let content = match self.read_file(&abs_path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
 
             requests_by_server
                 .entry(server_name)
                 .or_default()
-                .push((i, *call, abs_path, content));
+                .push((i, *call, abs_path));
         }
 
-        type TaskHandle = tokio::task::JoinHandle<(usize, String, Option<lsp_types::Location>, Option<String>, Option<String>, String)>;
-        let mut all_handles: Vec<TaskHandle> = Vec::new();
-        let global_semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+
+        let opened_files: Arc<Mutex<HashSet<PathBuf>>> =
+            Arc::new(Mutex::new(std::mem::take(&mut self.opened_files)));
+
+        type FutResult = (
+            usize,
+            PathBuf,
+            String,
+            Option<lsp_types::Location>,
+            Option<String>,
+            Option<String>,
+            String,
+        );
+        type BoxFuture = Pin<Box<dyn std::future::Future<Output = Option<FutResult>> + Send>>;
 
         for (server_name, server_calls) in requests_by_server {
             let ext = match server_calls.first() {
-                Some((_, call, _, _)) => call
+                Some((_, call, _)) => call
                     .file
                     .extension()
                     .and_then(|e| e.to_str())
@@ -1539,54 +1587,21 @@ impl AsyncLspResolver {
                 server = %server_name,
                 language = %language_id,
                 file_count,
-                "opening files for LSP"
+                "resolving calls via LSP (lazy loading)"
             );
 
-            let t_open_src = Instant::now();
-            for (_, _, abs_path, content) in &server_calls {
-                if !self.opened_files.contains(abs_path) {
-                    let _ = client.open_file(abs_path, content, language_id).await;
-                    self.opened_files.insert(abs_path.clone());
-                    self.timing.add_open_source_file(0);
-                }
-            }
-            self.timing.open_source_files_ms.fetch_add(
-                t_open_src.elapsed().as_millis() as u64,
-                Ordering::Relaxed,
-            );
 
-            let t_open_def = Instant::now();
-            let mut def_file_count = 0u64;
-            for def in index.definitions() {
-                if let Some(def_ext) = def.file.extension().and_then(|e| e.to_str()) {
-                    if Self::language_id_for_ext(def_ext) == language_id {
-                        let def_path = self.root.join(&def.file);
-                        if !self.opened_files.contains(&def_path) {
-                            if let Ok(content) = self.read_file(&def_path) {
-                                let _ = client.open_file(&def_path, &content, language_id).await;
-                                self.opened_files.insert(def_path);
-                                def_file_count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-            self.timing.open_def_files_ms.fetch_add(
-                t_open_def.elapsed().as_millis() as u64,
-                Ordering::Relaxed,
-            );
-            self.timing
-                .open_def_files_count
-                .fetch_add(def_file_count, Ordering::Relaxed);
 
             if !is_ready(&client) {
                 info!(server = %server_name, "waiting for LSP to index project");
                 let timeout = std::time::Duration::from_secs(300);
+                let t_wait = Instant::now();
                 if client.wait_for_progress(timeout).await {
                     info!(server = %server_name, "LSP ready");
                 } else {
                     warn!(server = %server_name, "LSP still indexing, proceeding anyway");
                 }
+                self.timing.add_wait_ready(t_wait.elapsed().as_millis() as u64);
                 set_ready(&client, true);
             }
 
@@ -1596,28 +1611,58 @@ impl AsyncLspResolver {
                 "resolving calls via LSP"
             );
 
-            for (call_idx, call, abs_path, content) in server_calls {
-                let lines: Vec<&str> = content.lines().collect();
-                let start_line_idx = call.span.start_line.saturating_sub(1);
+            let mut in_flight: FuturesUnordered<BoxFuture> = FuturesUnordered::new();
 
-                if start_line_idx >= lines.len() {
-                    continue;
+            for (call_idx, call, abs_path) in server_calls {
+                while in_flight.len() >= concurrency {
+                    if let Some(result) = in_flight.next().await {
+                        if let Some(ref r) = result {
+                            on_progress(&r.6, &r.1, &r.2);
+                        }
+                        if let Some(r) = result {
+                            self.process_resolution_result(r, index, &mut results);
+                        }
+                    }
                 }
 
-                let line_content = lines[start_line_idx];
-                let col = line_content.find(&call.callee).unwrap_or(0) as u32;
-
-                let semaphore = global_semaphore.clone();
                 let client_clone = client.clone();
                 let abs_path_clone = abs_path.clone();
                 let callee = call.callee.clone();
                 let qualifier = call.qualifier.clone();
-                let line_content_owned = line_content.to_string();
                 let timing = self.timing.clone();
                 let server_name_clone = server_name.clone();
+                let start_line_idx = call.span.start_line.saturating_sub(1);
+                let opened_files_clone = opened_files.clone();
+                let language_id_owned = language_id.to_string();
 
-                let handle = tokio::spawn(async move {
-                    let _permit = semaphore.acquire_owned().await.unwrap();
+                let fut: BoxFuture = Box::pin(async move {
+                    let path_for_read = abs_path_clone.clone();
+                    let content: String = match tokio::task::spawn_blocking(move || {
+                        std::fs::read_to_string(&path_for_read)
+                    })
+                    .await
+                    {
+                        Ok(Ok(c)) => c,
+                        _ => return None,
+                    };
+
+                    {
+                        let mut opened = opened_files_clone.lock().await;
+                        if !opened.contains(&abs_path_clone) {
+                            let _ = client_clone
+                                .open_file(&abs_path_clone, &content, &language_id_owned)
+                                .await;
+                            opened.insert(abs_path_clone.clone());
+                        }
+                    }
+
+                    let lines: Vec<&str> = content.lines().collect();
+                    if start_line_idx >= lines.len() {
+                        return None;
+                    }
+
+                    let line_content = lines[start_line_idx];
+                    let col = line_content.find(&callee).unwrap_or(0) as u32;
 
                     let (signature, receiver_type) = if skip_hover {
                         (None, None)
@@ -1632,10 +1677,14 @@ impl AsyncLspResolver {
                         timing.add_hover(t_hover.elapsed().as_millis() as u64);
 
                         let recv = if let Some(ref q) = qualifier {
-                            if let Some(qualifier_col) = line_content_owned.find(q.as_str()) {
+                            if let Some(qualifier_col) = line_content.find(q.as_str()) {
                                 let t_hover2 = Instant::now();
                                 let result = client_clone
-                                    .hover(&abs_path_clone, start_line_idx as u32, qualifier_col as u32)
+                                    .hover(
+                                        &abs_path_clone,
+                                        start_line_idx as u32,
+                                        qualifier_col as u32,
+                                    )
                                     .await
                                     .ok()
                                     .flatten()
@@ -1709,76 +1758,111 @@ impl AsyncLspResolver {
                         }
                     }
 
-                    (call_idx, callee, location, signature, receiver_type, server_name_clone)
-                });
-
-                all_handles.push(handle);
-            }
-        }
-
-        for handle in all_handles {
-            if let Ok((call_idx, callee, location, signature, receiver_type, server_name)) = handle.await {
-                let location = match location {
-                    Some(loc) => loc,
-                    None => {
-                        trace!(callee = %callee, "no definition found");
-                        self.get_server_stats(&server_name).no_definition += 1;
-                        continue;
-                    }
-                };
-
-                let def_path = match uri_to_path(&location.uri) {
-                    Some(p) => p,
-                    None => continue,
-                };
-
-                let rel_path = match def_path.strip_prefix(&self.root) {
-                    Ok(p) => p.to_path_buf(),
-                    Err(_) => {
-                        trace!(callee = %callee, path = %def_path.display(), "definition is external");
-                        self.get_server_stats(&server_name).external += 1;
-                        continue;
-                    }
-                };
-
-                let start_line = location.range.start.line as usize + 1;
-                let end_line = location.range.end.line as usize + 1;
-
-                let record = match index.get(&rel_path) {
-                    Some(r) => r,
-                    None => {
-                        trace!(callee = %callee, path = %rel_path.display(), "definition file not indexed");
-                        self.get_server_stats(&server_name).not_indexed += 1;
-                        continue;
-                    }
-                };
-
-                let def =
-                    match record.definitions.iter().find(|d| {
-                        d.span.start_line <= start_line && d.span.end_line >= end_line
-                    }) {
-                        Some(d) => d,
-                        None => {
-                            self.get_server_stats(&server_name).no_match += 1;
-                            continue;
-                        }
-                    };
-
-                self.get_server_stats(&server_name).resolved += 1;
-                results.push((
-                    call_idx,
-                    ResolvedCall {
-                        target_file: rel_path,
-                        target_name: def.name.clone(),
-                        target_span: def.span.clone(),
+                    Some((
+                        call_idx,
+                        abs_path_clone,
+                        callee,
+                        location,
                         signature,
                         receiver_type,
-                    },
-                ));
+                        server_name_clone,
+                    ))
+                });
+
+                in_flight.push(fut);
+            }
+
+            while let Some(result) = in_flight.next().await {
+                if let Some(ref r) = result {
+                    on_progress(&r.6, &r.1, &r.2);
+                }
+                if let Some(r) = result {
+                    self.process_resolution_result(r, index, &mut results);
+                }
             }
         }
 
+        self.opened_files = Arc::try_unwrap(opened_files)
+            .map(|m| m.into_inner())
+            .unwrap_or_else(|arc| arc.blocking_lock().clone());
+
         results
+    }
+
+    fn process_resolution_result(
+        &mut self,
+        result: (
+            usize,
+            PathBuf,
+            String,
+            Option<lsp_types::Location>,
+            Option<String>,
+            Option<String>,
+            String,
+        ),
+        index: &Index,
+        results: &mut Vec<(usize, ResolvedCall)>,
+    ) {
+        let (call_idx, _file, callee, location, signature, receiver_type, server_name) = result;
+
+        let location = match location {
+            Some(loc) => loc,
+            None => {
+                trace!(callee = %callee, "no definition found");
+                self.get_server_stats(&server_name).no_definition += 1;
+                return;
+            }
+        };
+
+        let def_path = match uri_to_path(&location.uri) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let rel_path = match def_path.strip_prefix(&self.root) {
+            Ok(p) => p.to_path_buf(),
+            Err(_) => {
+                trace!(callee = %callee, path = %def_path.display(), "definition is external");
+                self.get_server_stats(&server_name).external += 1;
+                return;
+            }
+        };
+
+        let start_line = location.range.start.line as usize + 1;
+        let end_line = location.range.end.line as usize + 1;
+
+        let record = match index.get(&rel_path) {
+            Some(r) => r,
+            None => {
+                trace!(callee = %callee, path = %rel_path.display(), "definition file not indexed");
+                self.get_server_stats(&server_name).not_indexed += 1;
+                return;
+            }
+        };
+
+        let def = match record
+            .definitions
+            .iter()
+            .find(|d| d.span.start_line <= start_line && d.span.end_line >= end_line)
+        {
+            Some(d) => d,
+            None => {
+                self.get_server_stats(&server_name).no_match += 1;
+                return;
+            }
+        };
+
+        self.get_server_stats(&server_name).resolved += 1;
+        results.push((
+            call_idx,
+            ResolvedCall {
+                target_file: rel_path,
+                target_name: def.name.clone(),
+                target_span: def.span.clone(),
+                signature,
+                receiver_type,
+            },
+        ));
     }
 
     pub async fn shutdown_all(&mut self) {
