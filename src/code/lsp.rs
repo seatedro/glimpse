@@ -89,7 +89,7 @@ fn is_declaration_file_uri(uri: &str) -> bool {
 
 fn should_skip_for_lsp(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
-    
+
     const SKIP_DIRS: &[&str] = &[
         "vendor/",
         "vendors/",
@@ -106,13 +106,13 @@ fn should_skip_for_lsp(path: &Path) -> bool {
         "out/",
         "__pycache__/",
     ];
-    
+
     for dir in SKIP_DIRS {
         if path_str.contains(dir) {
             return true;
         }
     }
-    
+
     false
 }
 
@@ -693,35 +693,55 @@ impl std::fmt::Display for LspTimingStats {
             "  open source files:  {:>7}ms ({} files, {:.1}ms avg)",
             open_src_ms,
             open_src_count,
-            if open_src_count > 0 { open_src_ms as f64 / open_src_count as f64 } else { 0.0 }
+            if open_src_count > 0 {
+                open_src_ms as f64 / open_src_count as f64
+            } else {
+                0.0
+            }
         )?;
         writeln!(
             f,
             "  open def files:     {:>7}ms ({} files, {:.1}ms avg)",
             open_def_ms,
             open_def_count,
-            if open_def_count > 0 { open_def_ms as f64 / open_def_count as f64 } else { 0.0 }
+            if open_def_count > 0 {
+                open_def_ms as f64 / open_def_count as f64
+            } else {
+                0.0
+            }
         )?;
         writeln!(
             f,
             "  goto_definition:    {:>7}ms ({} calls, {:.1}ms avg)",
             goto_ms,
             goto_count,
-            if goto_count > 0 { goto_ms as f64 / goto_count as f64 } else { 0.0 }
+            if goto_count > 0 {
+                goto_ms as f64 / goto_count as f64
+            } else {
+                0.0
+            }
         )?;
         writeln!(
             f,
             "  hover:              {:>7}ms ({} calls, {:.1}ms avg)",
             hover_ms,
             hover_count,
-            if hover_count > 0 { hover_ms as f64 / hover_count as f64 } else { 0.0 }
+            if hover_count > 0 {
+                hover_ms as f64 / hover_count as f64
+            } else {
+                0.0
+            }
         )?;
         writeln!(
             f,
             "  declaration chase:  {:>7}ms ({} calls, {:.1}ms avg)",
             decl_ms,
             decl_count,
-            if decl_count > 0 { decl_ms as f64 / decl_count as f64 } else { 0.0 }
+            if decl_count > 0 {
+                decl_ms as f64 / decl_count as f64
+            } else {
+                0.0
+            }
         )?;
 
         let total = wait_ready + open_src_ms + open_def_ms + goto_ms + hover_ms + decl_ms;
@@ -1010,7 +1030,7 @@ impl AsyncLspClient {
                 }
             }
         }
-        
+
         let mut pending = inner.pending.lock().await;
         let count = pending.len();
         if count > 0 {
@@ -1021,7 +1041,11 @@ impl AsyncLspClient {
         }
     }
 
-    async fn handle_server_message(inner: &Arc<AsyncLspClientInner>, msg: &LspMessage, method: &str) {
+    async fn handle_server_message(
+        inner: &Arc<AsyncLspClientInner>,
+        msg: &LspMessage,
+        method: &str,
+    ) {
         match method {
             "window/workDoneProgress/create" => {
                 if let Some(ref id) = msg.id {
@@ -1050,9 +1074,11 @@ impl AsyncLspClient {
             }
             "$/progress" => {
                 if let Some(ref params) = msg.params {
-                    let token = params
-                        .get("token")
-                        .and_then(|t| t.as_str().map(|s| s.to_string()).or_else(|| t.as_i64().map(|n| n.to_string())));
+                    let token = params.get("token").and_then(|t| {
+                        t.as_str()
+                            .map(|s| s.to_string())
+                            .or_else(|| t.as_i64().map(|n| n.to_string()))
+                    });
                     let kind = params
                         .get("value")
                         .and_then(|v| v.get("kind"))
@@ -1148,10 +1174,16 @@ impl AsyncLspClient {
 
         self.send_message(&msg).await?;
 
-        self.await_response(rx, std::time::Duration::from_secs(30)).await
+        self.await_response(rx, std::time::Duration::from_secs(30))
+            .await
     }
 
-    async fn send_request_with_timeout(&self, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value> {
+    async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let id = self.next_id();
         let (tx, rx) = oneshot::channel();
 
@@ -1173,7 +1205,11 @@ impl AsyncLspClient {
         self.await_response(rx, timeout).await
     }
 
-    async fn await_response(&self, rx: oneshot::Receiver<Result<Value, String>>, timeout: std::time::Duration) -> Result<Value> {
+    async fn await_response(
+        &self,
+        rx: oneshot::Receiver<Result<Value, String>>,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let result = tokio::time::timeout(timeout, rx).await;
         match result {
             Ok(Ok(Ok(value))) => Ok(value),
@@ -1235,7 +1271,8 @@ impl AsyncLspClient {
             "initialize",
             serde_json::to_value(params)?,
             std::time::Duration::from_secs(300),
-        ).await?;
+        )
+        .await?;
         self.send_notification("initialized", serde_json::to_value(InitializedParams {})?)
             .await?;
 
@@ -1549,8 +1586,6 @@ impl AsyncLspResolver {
                 .push((i, *call, abs_path));
         }
 
-
-
         let opened_files: Arc<Mutex<HashSet<PathBuf>>> =
             Arc::new(Mutex::new(std::mem::take(&mut self.opened_files)));
 
@@ -1590,8 +1625,6 @@ impl AsyncLspResolver {
                 "resolving calls via LSP (lazy loading)"
             );
 
-
-
             if !is_ready(&client) {
                 info!(server = %server_name, "waiting for LSP to index project");
                 let timeout = std::time::Duration::from_secs(300);
@@ -1601,7 +1634,8 @@ impl AsyncLspResolver {
                 } else {
                     warn!(server = %server_name, "LSP still indexing, proceeding anyway");
                 }
-                self.timing.add_wait_ready(t_wait.elapsed().as_millis() as u64);
+                self.timing
+                    .add_wait_ready(t_wait.elapsed().as_millis() as u64);
                 set_ready(&client, true);
             }
 

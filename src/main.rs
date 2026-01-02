@@ -677,7 +677,10 @@ fn resolve_calls_with_lsp(
 
         // Group calls by cache_key - only resolve ONE per unique key
         // calls_by_key: cache_key -> (representative call, list of (file_path, call_idx) to update)
-        let mut calls_by_key: HashMap<CacheKey, (glimpse::code::index::Call, Vec<(PathBuf, usize)>)> = HashMap::new();
+        let mut calls_by_key: HashMap<
+            CacheKey,
+            (glimpse::code::index::Call, Vec<(PathBuf, usize)>),
+        > = HashMap::new();
 
         for (file_path, record) in &index.files {
             for (call_idx, call) in record.calls.iter().enumerate() {
@@ -685,12 +688,13 @@ fn resolve_calls_with_lsp(
                     continue;
                 }
 
-                let ext = call.file.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
-                let cache_key: CacheKey = (
-                    call.callee.clone(),
-                    call.qualifier.clone(),
-                    ext,
-                );
+                let ext = call
+                    .file
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let cache_key: CacheKey = (call.callee.clone(), call.qualifier.clone(), ext);
 
                 calls_by_key
                     .entry(cache_key)
@@ -706,14 +710,21 @@ fn resolve_calls_with_lsp(
 
         // Resolve only unique calls
         if !calls_by_key.is_empty() {
-            let calls_to_resolve: Vec<_> = unique_calls.iter()
+            let calls_to_resolve: Vec<_> = unique_calls
+                .iter()
                 .map(|k| &calls_by_key.get(k).unwrap().0)
                 .collect();
             let skip_hover = true;
             let results = resolver
-                .resolve_calls_batch(&calls_to_resolve, index, concurrency, skip_hover, |server, file, callee| {
-                    progress.lsp_resolving(server, file, callee);
-                })
+                .resolve_calls_batch(
+                    &calls_to_resolve,
+                    index,
+                    concurrency,
+                    skip_hover,
+                    |server, file, callee| {
+                        progress.lsp_resolving(server, file, callee);
+                    },
+                )
                 .await;
 
             for (batch_idx, resolved_call) in results {
