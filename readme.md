@@ -213,16 +213,9 @@ When using `--precise` mode, Glimpse uses Language Server Protocol (LSP) servers
 3. **URL download** - Download pre-built binaries (e.g., lua-language-server, rust-analyzer)
 4. **Package managers** - Install via npm/bun, go, or cargo if configured
 
-For LSPs that don't provide pre-built binaries, auto-install requires the respective toolchain:
+For LSPs that don't provide pre-built binaries, auto-install requires the respective toolchain.
 
-| LSP | Install Method | Requirement |
-|-----|---------------|-------------|
-| lua-language-server | URL download | None |
-| rust-analyzer | URL download | None |
-| gopls | `go install` | Go toolchain |
-| pyright | `npm install` | npm or bun |
-| typescript-language-server | `npm install` | npm or bun |
-| nil (Nix) | `cargo install` | Rust toolchain |
+Glimpse supports LSP auto-install using `cargo`, `npm/bun`, `go`.
 
 If auto-install fails, you'll see: `LSP server '<name>' not found. Install it manually.`
 
